@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const tmi = require("tmi.js");
 
 const app = express();
 app.use(cors());
@@ -11,7 +12,6 @@ const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
 const GRID_SIZE = 4;
 const TOTAL_NUMBERS = 75;
 
-// ---------- Génération de carton (même algorithme que le prototype) ----------
 function hashString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -71,14 +71,11 @@ function columnStatus(grid, drawnSet) {
   return { cols, count, blackout: count === GRID_SIZE };
 }
 
-// ---------- État de la partie, en mémoire ----------
-// Attention : cet état est remis à zéro si le serveur redémarre
-// (ex: après une longue période d'inactivité sur l'offre gratuite Render).
 let state = {
   drawn: [],
-  players: [], // { pseudo, isSub }
+  players: [],
   tierWinners: { 1: null, 2: null, 3: null },
-  winner: null, // { pseudo, cardType }
+  winner: null,
 };
 
 function gamePhase() {
@@ -135,12 +132,18 @@ function checkAdmin(req, res) {
   return true;
 }
 
-// ---------- Routes ----------
+function registerPlayerInternal(pseudo, isSub) {
+  if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
+  if (!state.players.some((p) => p.pseudo === pseudo)) {
+    state.players.push({ pseudo, isSub: !!isSub });
+  }
+  return { ok: true };
+}
+
 app.get("/", (req, res) => {
   res.send("🐟 Backend Carthon Plein en ligne !");
 });
 
-// État complet de la partie (numéros tirés, joueurs, paliers, classement, gagnant)
 app.get("/state", (req, res) => {
   const drawnSet = new Set(state.drawn);
   res.json({
@@ -153,24 +156,20 @@ app.get("/state", (req, res) => {
   });
 });
 
-// Un viewer s'inscrit et récupère son carton
 app.post("/register", (req, res) => {
   const { pseudo, isSub } = req.body || {};
   if (!pseudo || typeof pseudo !== "string") {
     return res.status(400).json({ error: "pseudo manquant" });
   }
-  if (gamePhase() !== "lobby") {
+  const result = registerPlayerInternal(pseudo, isSub);
+  if (!result.ok) {
     return res.status(403).json({ error: "inscriptions fermées pour cette partie" });
-  }
-  if (!state.players.some((p) => p.pseudo === pseudo)) {
-    state.players.push({ pseudo, isSub: !!isSub });
   }
   const grid = generateCard(pseudo);
   const bonusGrid = isSub ? generateCard(pseudo + "#sub") : null;
   res.json({ grid, bonusGrid });
 });
 
-// Récupérer le carton d'un viewer déjà inscrit (pour réafficher sans re-générer)
 app.get("/card/:pseudo", (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
@@ -180,7 +179,6 @@ app.get("/card/:pseudo", (req, res) => {
   res.json({ grid, bonusGrid });
 });
 
-// Le streamer tire un numéro (protégé par la clé admin)
 app.post("/draw", (req, res) => {
   if (!checkAdmin(req, res)) return;
   if (gamePhase() === "finished") return res.status(403).json({ error: "partie terminée" });
@@ -194,13 +192,68 @@ app.post("/draw", (req, res) => {
   res.json({ drawn: n });
 });
 
-// Le streamer relance une nouvelle partie (protégé par la clé admin)
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
   state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null };
   res.json({ ok: true });
 });
 
+const BOT_USERNAME = process.env.BOT_USERNAME;
+const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
+const CHANNEL_NAME = process.env.CHANNEL_NAME;
+
+if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
+  const client = new tmi.Client({
+    identity: { username: BOT_USERNAME, password: BOT_OAUTH_TOKEN },
+    channels: [CHANNEL_NAME],
+  });
+
+  client.connect().catch((err) => console.log("Erreur de connexion au chat :", err));
+
+  client.on("connected", () => {
+    console.log("Bot de chat connecté sur #" + CHANNEL_NAME);
+  });
+
+  client.on("message", (channel, tags, message, self) => {
+    if (self) return;
+    const text = message.trim().toLowerCase();
+    if (text === "!carthon") {
+      const pseudo = tags["display-name"] || tags.username;
+      const isSub = !!tags.subscriber;
+      const result = registerPlayerInternal(pseudo, isSub);
+      if (result.ok) {
+        client.say(channel, "@" + pseudo + " tu es inscrit(e) au Carthon Plein 🐟 va voir ton carton dans le panneau de l'extension !");
+      } else {
+        client.say(channel, "@" + pseudo + " les inscriptions sont fermées pour cette partie, à la prochaine !");
+      }
+    }
+  });
+} else {
+  console.log("Bot de chat non configuré — l'inscription par bouton reste disponible.");
+}
+
 app.listen(PORT, () => {
   console.log("Serveur démarré sur le port " + PORT);
 });
+
+Et pour package.json, remplace tout par :
+
+json
+{
+  "name": "carthon-plein-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend de l'extension Twitch Carthon Plein",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "tmi.js": "^1.8.5"
+  }
+}
