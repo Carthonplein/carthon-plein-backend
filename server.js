@@ -235,25 +235,3 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
 app.listen(PORT, () => {
   console.log("Serveur démarré sur le port " + PORT);
 });
-
-Et pour package.json, remplace tout par :
-
-json
-{
-  "name": "carthon-plein-backend",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Backend de l'extension Twitch Carthon Plein",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "tmi.js": "^1.8.5"
-  }
-}
