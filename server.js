@@ -211,10 +211,59 @@ app.post("/register", (req, res) => {
 app.get("/card/:pseudo", (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
-  const isSub = player ? player.isSub : false;
+  if (!player) {
+    return res.json({ registered: false });
+  }
   const grid = generateCard(pseudo);
-  const bonusGrid = isSub ? generateCard(pseudo + "#sub") : null;
-  res.json({ grid, bonusGrid });
+  const bonusGrid = player.isSub ? generateCard(pseudo + "#sub") : null;
+  res.json({ registered: true, grid, bonusGrid });
+});
+
+// ---------- Résolution d'identité (identifiant Twitch réel -> pseudo) ----------
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+
+let appAccessToken = null;
+let appAccessTokenExpiry = 0;
+
+async function getAppAccessToken() {
+  if (appAccessToken && Date.now() < appAccessTokenExpiry - 60000) return appAccessToken;
+  const res = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: TWITCH_CLIENT_ID,
+      client_secret: TWITCH_CLIENT_SECRET,
+      grant_type: "client_credentials",
+    }),
+  });
+  const data = await res.json();
+  appAccessToken = data.access_token;
+  appAccessTokenExpiry = Date.now() + (data.expires_in || 0) * 1000;
+  return appAccessToken;
+}
+
+app.get("/identify/:userId", async (req, res) => {
+  const userId = req.params.userId;
+  if (!/^\d+$/.test(userId)) {
+    // Identifiant opaque (U- ou A-) : identité non partagée par le viewer
+    return res.json({ linked: false });
+  }
+  try {
+    const token = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?id=" + userId, {
+      headers: {
+        "Client-Id": TWITCH_CLIENT_ID,
+        Authorization: "Bearer " + token,
+      },
+    });
+    const data = await r.json();
+    const user = data.data && data.data[0];
+    if (!user) return res.json({ linked: false });
+    res.json({ linked: true, pseudo: user.display_name });
+  } catch (e) {
+    res.status(500).json({ linked: false, error: "erreur API Twitch" });
+  }
 });
 
 app.post("/draw", (req, res) => {
