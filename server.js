@@ -1,3 +1,8 @@
+bash
+
+cat /home/claude/carthon-plein-backend/server.js
+Sortie
+
 const express = require("express");
 const cors = require("cors");
 const tmi = require("tmi.js");
@@ -12,6 +17,7 @@ const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
 const GRID_SIZE = 4;
 const TOTAL_NUMBERS = 75;
 
+// ---------- Génération de carton (même algorithme que le prototype) ----------
 function hashString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -71,11 +77,12 @@ function columnStatus(grid, drawnSet) {
   return { cols, count, blackout: count === GRID_SIZE };
 }
 
+// ---------- État de la partie, en mémoire ----------
 let state = {
   drawn: [],
-  players: [],
+  players: [], // { pseudo, isSub }
   tierWinners: { 1: null, 2: null, 3: null },
-  winner: null,
+  winner: null, // { pseudo, cardType }
 };
 
 function gamePhase() {
@@ -132,6 +139,7 @@ function checkAdmin(req, res) {
   return true;
 }
 
+// Inscription partagée entre le bouton du panel (HTTP) et la commande de chat
 function registerPlayerInternal(pseudo, isSub) {
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
   if (!state.players.some((p) => p.pseudo === pseudo)) {
@@ -140,8 +148,43 @@ function registerPlayerInternal(pseudo, isSub) {
   return { ok: true };
 }
 
+// ---------- Routes ----------
 app.get("/", (req, res) => {
   res.send("🐟 Backend Carthon Plein en ligne !");
+});
+
+app.get("/privacy", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Politique de confidentialité - Carthon Plein</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #241C15; background:#FBF2D9; }
+    h1 { color: #3C86AA; }
+    h2 { margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <h1>🐟 Politique de confidentialité - Carthon Plein</h1>
+  <p><em>Dernière mise à jour : 2026</em></p>
+  <h2>Ce que l'extension utilise</h2>
+  <p>Carthon Plein est une extension Twitch de loto/bingo interactif. Pour fonctionner, elle utilise :</p>
+  <ul>
+    <li>Le pseudo Twitch que vous saisissez vous-même (dans le panneau) ou votre pseudo de chat (si vous vous inscrivez via la commande !carthon) — utilisé uniquement pour générer votre carton et l'afficher dans le classement de la partie en cours.</li>
+    <li>Votre statut d'abonné à la chaîne (le cas échéant), pour vous attribuer un carton bonus.</li>
+  </ul>
+  <h2>Ce que l'extension NE fait PAS</h2>
+  <ul>
+    <li>Elle ne collecte aucune donnée personnelle au-delà du pseudo utilisé pour la partie.</li>
+    <li>Elle ne partage aucune information avec des tiers.</li>
+    <li>Elle ne stocke aucune donnée au-delà de la durée d'une partie (les données sont effacées à chaque nouvelle partie).</li>
+    <li>Elle n'utilise aucun cookie de suivi.</li>
+  </ul>
+  <h2>Contact</h2>
+  <p>Pour toute question : <a href="mailto:carthonplein@gmail.com">carthonplein@gmail.com</a></p>
+</body>
+</html>`);
 });
 
 app.get("/state", (req, res) => {
@@ -198,6 +241,7 @@ app.post("/reset", (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Bot de chat : inscription via "!carthon" ----------
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
 const CHANNEL_NAME = process.env.CHANNEL_NAME;
@@ -229,7 +273,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
     }
   });
 } else {
-  console.log("Bot de chat non configuré — l'inscription par bouton reste disponible.");
+  console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
 }
 
 app.listen(PORT, () => {
