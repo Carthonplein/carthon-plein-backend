@@ -1,8 +1,3 @@
-bash
-
-cat /home/claude/carthon-plein-backend/server.js
-Sortie
-
 const express = require("express");
 const cors = require("cors");
 const tmi = require("tmi.js");
