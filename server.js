@@ -78,6 +78,7 @@ let state = {
   players: [], // { pseudo, isSub }
   tierWinners: { 1: null, 2: null, 3: null },
   winner: null, // { pseudo, cardType }
+  started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
 };
 
 function gamePhase() {
@@ -182,12 +183,250 @@ app.get("/privacy", (req, res) => {
 </html>`);
 });
 
+app.get("/chat-overlay", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Carthon Plein - Chat Overlay</title>
+<script src="https://cdn.jsdelivr.net/npm/tmi.js@1.8.5/dist/tmi.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+
+  :root {
+    --ink: #241C15;
+    --cream: #F3E0B0;
+    --cream-light: #FBF2D9;
+    --ocean: #3C86AA;
+    --gold: #D9A62B;
+    --green: #4C8C5B;
+    --red: #B5493A;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Inter', sans-serif;
+  }
+
+  /* ---- CHANGE ICI la taille de la zone de chat ---- */
+  #chat-container {
+    width: 420px;
+    height: 700px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .msg {
+    background: var(--cream-light);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    padding: 8px 12px;
+    box-shadow: 0 3px 0 var(--ink);
+    animation: slideIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    word-wrap: break-word;
+    max-width: 100%;
+  }
+
+  .msg.sub {
+    background: linear-gradient(135deg, var(--cream-light), #FFF3D6);
+    border-color: var(--gold);
+  }
+
+  .msg.mod {
+    border-color: var(--green);
+  }
+
+  .msg.broadcaster {
+    background: var(--ink);
+    border-color: var(--gold);
+  }
+  .msg.broadcaster .username,
+  .msg.broadcaster .text {
+    color: var(--cream-light);
+  }
+
+  @keyframes slideIn {
+    from { transform: translateY(16px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  @keyframes fadeOut {
+    from { opacity: 1; max-height: 200px; margin-bottom: 8px; }
+    to { opacity: 0; max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border-width: 0; }
+  }
+
+  .msg.leaving {
+    animation: fadeOut 0.4s ease forwards;
+    overflow: hidden;
+  }
+
+  .badges {
+    display: inline-flex;
+    gap: 3px;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    font-size: 10px;
+  }
+  .badge.badge-broadcaster { background: var(--gold); }
+  .badge.badge-mod { background: var(--green); }
+  .badge.badge-sub { background: var(--red); color: var(--cream-light); }
+
+  .username {
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--ocean);
+  }
+
+  .text {
+    font-size: 14px;
+    color: var(--ink);
+    margin-top: 2px;
+    line-height: 1.35;
+  }
+
+  .text img.emote {
+    height: 22px;
+    vertical-align: middle;
+    margin: 0 1px;
+  }
+</style>
+</head>
+<body>
+  <div id="chat-container"></div>
+
+  <script>
+    // ---- CONFIGURATION ----
+    const CHANNEL = "carthonplein";           // ta chaîne Twitch
+    const MAX_MESSAGES = 8;                    // nombre de messages visibles à la fois
+    const MESSAGE_LIFETIME_MS = 25000;         // durée avant qu'un message disparaisse (ms)
+
+    const container = document.getElementById("chat-container");
+
+    function pickBadgeClass(tags) {
+      if (tags.badges && tags.badges.broadcaster) return "broadcaster";
+      if (tags.mod || (tags.badges && tags.badges.moderator)) return "mod";
+      if (tags.subscriber || (tags.badges && tags.badges.subscriber)) return "sub";
+      return "";
+    }
+
+    function renderBadges(tags) {
+      let html = '<span class="badges">';
+      if (tags.badges && tags.badges.broadcaster) {
+        html += '<span class="badge badge-broadcaster">🐟</span>';
+      }
+      if (tags.mod || (tags.badges && tags.badges.moderator)) {
+        html += '<span class="badge badge-mod">🛡️</span>';
+      }
+      if (tags.subscriber || (tags.badges && tags.badges.subscriber)) {
+        html += '<span class="badge badge-sub">⭐</span>';
+      }
+      html += '</span>';
+      return html;
+    }
+
+    // Remplace les emotes Twitch (positions données par tags.emotes) par des <img>
+    function renderMessageWithEmotes(message, emotes) {
+      if (!emotes || Object.keys(emotes).length === 0) {
+        return escapeHtml(message);
+      }
+      // Construit la liste [{start, end, id}] triée
+      const ranges = [];
+      for (const id in emotes) {
+        emotes[id].forEach((pos) => {
+          const [start, end] = pos.split("-").map(Number);
+          ranges.push({ start, end, id });
+        });
+      }
+      ranges.sort((a, b) => a.start - b.start);
+
+      let result = "";
+      let cursor = 0;
+      const chars = Array.from(message); // gère les emojis multi-octets correctement
+
+      ranges.forEach((r) => {
+        result += escapeHtml(chars.slice(cursor, r.start).join(""));
+        const emoteUrl = "https://static-cdn.jtvnw.net/emoticons/v2/" + r.id + "/default/dark/2.0";
+        result += '<img class="emote" src="' + emoteUrl + '" alt="" />';
+        cursor = r.end + 1;
+      });
+      result += escapeHtml(chars.slice(cursor).join(""));
+      return result;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function addMessage(tags, message) {
+      const badgeClass = pickBadgeClass(tags);
+      const displayName = tags["display-name"] || tags.username;
+      const color = tags.color || "var(--ocean)";
+
+      const el = document.createElement("div");
+      el.className = "msg" + (badgeClass ? " " + badgeClass : "");
+      el.innerHTML =
+        '<div>' + renderBadges(tags) +
+        '<span class="username" style="color:' + (badgeClass === "broadcaster" ? "" : color) + '">' + escapeHtml(displayName) + '</span>' +
+        '</div>' +
+        '<div class="text">' + renderMessageWithEmotes(message, tags.emotes) + '</div>';
+
+      container.appendChild(el);
+
+      // Limite le nombre de messages visibles
+      while (container.children.length > MAX_MESSAGES) {
+        container.removeChild(container.firstChild);
+      }
+
+      // Disparition automatique après un délai
+      setTimeout(() => {
+        if (!el.parentNode) return;
+        el.classList.add("leaving");
+        setTimeout(() => el.remove(), 450);
+      }, MESSAGE_LIFETIME_MS);
+    }
+
+    const client = new tmi.Client({
+      channels: [CHANNEL],
+    });
+
+    client.connect().catch(console.error);
+
+    client.on("message", (channel, tags, message, self) => {
+      addMessage(tags, message);
+    });
+  </script>
+</body>
+</html>
+`);
+});
+
 app.get("/state", (req, res) => {
   const drawnSet = new Set(state.drawn);
   res.json({
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub })),
     gamePhase: gamePhase(),
+    started: state.started,
     tierWinners: state.tierWinners,
     winner: state.winner,
     leaderboard: computeLeaderboard(drawnSet),
@@ -281,7 +520,7 @@ app.post("/draw", (req, res) => {
 
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true };
   res.json({ ok: true });
 });
 
