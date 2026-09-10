@@ -1,17 +1,18 @@
+
 const express = require("express");
 const cors = require("cors");
 const tmi = require("tmi.js");
-
+ 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
+ 
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
-
+ 
 const GRID_SIZE = 4;
 const TOTAL_NUMBERS = 75;
-
+ 
 // ---------- Génération de carton (même algorithme que le prototype) ----------
 function hashString(str) {
   let h = 2166136261;
@@ -21,7 +22,7 @@ function hashString(str) {
   }
   return h >>> 0;
 }
-
+ 
 function mulberry32(seed) {
   let a = seed;
   return function () {
@@ -32,7 +33,7 @@ function mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
+ 
 function seededShuffle(arr, rng) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -41,7 +42,7 @@ function seededShuffle(arr, rng) {
   }
   return a;
 }
-
+ 
 function generateCard(seedStr) {
   const rng = mulberry32(hashString(seedStr));
   const pool = [];
@@ -55,7 +56,7 @@ function generateCard(seedStr) {
   }
   return grid;
 }
-
+ 
 function columnStatus(grid, drawnSet) {
   const cols = [];
   for (let c = 0; c < GRID_SIZE; c++) {
@@ -71,7 +72,7 @@ function columnStatus(grid, drawnSet) {
   const count = cols.filter(Boolean).length;
   return { cols, count, blackout: count === GRID_SIZE };
 }
-
+ 
 // ---------- État de la partie, en mémoire ----------
 let state = {
   drawn: [],
@@ -80,13 +81,13 @@ let state = {
   winner: null, // { pseudo, cardType }
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
 };
-
+ 
 function gamePhase() {
   if (state.winner) return "finished";
   if (state.drawn.length > 0) return "playing";
   return "lobby";
 }
-
+ 
 function computeEntrants() {
   const entrants = [];
   for (const p of state.players) {
@@ -95,7 +96,7 @@ function computeEntrants() {
   }
   return entrants;
 }
-
+ 
 function computeLeaderboard(drawnSet) {
   const bestByPseudo = new Map();
   for (const p of state.players) {
@@ -113,7 +114,7 @@ function computeLeaderboard(drawnSet) {
   }
   return [...bestByPseudo.values()].sort((a, b) => b.count - a.count || a.remaining - b.remaining).slice(0, 3);
 }
-
+ 
 function refreshTiersAndWinner() {
   if (state.winner) return;
   const drawnSet = new Set(state.drawn);
@@ -126,7 +127,7 @@ function refreshTiersAndWinner() {
   const finalWinner = entrants.find((e) => columnStatus(e.grid, drawnSet).blackout);
   if (finalWinner) state.winner = { pseudo: finalWinner.pseudo, cardType: finalWinner.cardType };
 }
-
+ 
 function checkAdmin(req, res) {
   if (req.body?.adminKey !== ADMIN_KEY) {
     res.status(401).json({ error: "clé admin invalide" });
@@ -134,7 +135,7 @@ function checkAdmin(req, res) {
   }
   return true;
 }
-
+ 
 // Inscription partagée entre le bouton du panel (HTTP) et la commande de chat
 function registerPlayerInternal(pseudo, isSub) {
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
@@ -143,12 +144,12 @@ function registerPlayerInternal(pseudo, isSub) {
   }
   return { ok: true };
 }
-
+ 
 // ---------- Routes ----------
 app.get("/", (req, res) => {
   res.send("🐟 Backend Carthon Plein en ligne !");
 });
-
+ 
 app.get("/privacy", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="fr">
@@ -182,7 +183,7 @@ app.get("/privacy", (req, res) => {
 </body>
 </html>`);
 });
-
+ 
 app.get("/chat-overlay", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="fr">
@@ -192,7 +193,7 @@ app.get("/chat-overlay", (req, res) => {
 <script src="https://cdn.jsdelivr.net/npm/tmi.js@1.8.5/dist/tmi.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700&family=Inter:wght@400;500;600&display=swap');
-
+ 
   :root {
     --ink: #241C15;
     --cream: #F3E0B0;
@@ -202,9 +203,9 @@ app.get("/chat-overlay", (req, res) => {
     --green: #4C8C5B;
     --red: #B5493A;
   }
-
+ 
   * { box-sizing: border-box; }
-
+ 
   html, body {
     margin: 0;
     padding: 0;
@@ -212,7 +213,7 @@ app.get("/chat-overlay", (req, res) => {
     overflow: hidden;
     font-family: 'Inter', sans-serif;
   }
-
+ 
   /* ---- CHANGE ICI la taille de la zone de chat ---- */
   #chat-container {
     width: 420px;
@@ -223,7 +224,7 @@ app.get("/chat-overlay", (req, res) => {
     padding: 12px;
     gap: 8px;
   }
-
+ 
   .msg {
     background: var(--cream-light);
     border: 3px solid var(--ink);
@@ -234,16 +235,16 @@ app.get("/chat-overlay", (req, res) => {
     word-wrap: break-word;
     max-width: 100%;
   }
-
+ 
   .msg.sub {
     background: linear-gradient(135deg, var(--cream-light), #FFF3D6);
     border-color: var(--gold);
   }
-
+ 
   .msg.mod {
     border-color: var(--green);
   }
-
+ 
   .msg.broadcaster {
     background: var(--ink);
     border-color: var(--gold);
@@ -252,29 +253,29 @@ app.get("/chat-overlay", (req, res) => {
   .msg.broadcaster .text {
     color: var(--cream-light);
   }
-
+ 
   @keyframes slideIn {
     from { transform: translateY(16px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
   }
-
+ 
   @keyframes fadeOut {
     from { opacity: 1; max-height: 200px; margin-bottom: 8px; }
     to { opacity: 0; max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border-width: 0; }
   }
-
+ 
   .msg.leaving {
     animation: fadeOut 0.4s ease forwards;
     overflow: hidden;
   }
-
+ 
   .badges {
     display: inline-flex;
     gap: 3px;
     vertical-align: middle;
     margin-right: 4px;
   }
-
+ 
   .badge {
     display: inline-flex;
     align-items: center;
@@ -287,21 +288,21 @@ app.get("/chat-overlay", (req, res) => {
   .badge.badge-broadcaster { background: var(--gold); }
   .badge.badge-mod { background: var(--green); }
   .badge.badge-sub { background: var(--red); color: var(--cream-light); }
-
+ 
   .username {
     font-family: 'Baloo 2', sans-serif;
     font-weight: 700;
     font-size: 15px;
     color: var(--ocean);
   }
-
+ 
   .text {
     font-size: 14px;
     color: var(--ink);
     margin-top: 2px;
     line-height: 1.35;
   }
-
+ 
   .text img.emote {
     height: 22px;
     vertical-align: middle;
@@ -311,22 +312,22 @@ app.get("/chat-overlay", (req, res) => {
 </head>
 <body>
   <div id="chat-container"></div>
-
+ 
   <script>
     // ---- CONFIGURATION ----
     const CHANNEL = "carthonplein";           // ta chaîne Twitch
     const MAX_MESSAGES = 8;                    // nombre de messages visibles à la fois
     const MESSAGE_LIFETIME_MS = 25000;         // durée avant qu'un message disparaisse (ms)
-
+ 
     const container = document.getElementById("chat-container");
-
+ 
     function pickBadgeClass(tags) {
       if (tags.badges && tags.badges.broadcaster) return "broadcaster";
       if (tags.mod || (tags.badges && tags.badges.moderator)) return "mod";
       if (tags.subscriber || (tags.badges && tags.badges.subscriber)) return "sub";
       return "";
     }
-
+ 
     function renderBadges(tags) {
       let html = '<span class="badges">';
       if (tags.badges && tags.badges.broadcaster) {
@@ -341,7 +342,7 @@ app.get("/chat-overlay", (req, res) => {
       html += '</span>';
       return html;
     }
-
+ 
     // Remplace les emotes Twitch (positions données par tags.emotes) par des <img>
     function renderMessageWithEmotes(message, emotes) {
       if (!emotes || Object.keys(emotes).length === 0) {
@@ -356,11 +357,11 @@ app.get("/chat-overlay", (req, res) => {
         });
       }
       ranges.sort((a, b) => a.start - b.start);
-
+ 
       let result = "";
       let cursor = 0;
       const chars = Array.from(message); // gère les emojis multi-octets correctement
-
+ 
       ranges.forEach((r) => {
         result += escapeHtml(chars.slice(cursor, r.start).join(""));
         const emoteUrl = "https://static-cdn.jtvnw.net/emoticons/v2/" + r.id + "/default/dark/2.0";
@@ -370,18 +371,18 @@ app.get("/chat-overlay", (req, res) => {
       result += escapeHtml(chars.slice(cursor).join(""));
       return result;
     }
-
+ 
     function escapeHtml(str) {
       const div = document.createElement("div");
       div.textContent = str;
       return div.innerHTML;
     }
-
+ 
     function addMessage(tags, message) {
       const badgeClass = pickBadgeClass(tags);
       const displayName = tags["display-name"] || tags.username;
       const color = tags.color || "var(--ocean)";
-
+ 
       const el = document.createElement("div");
       el.className = "msg" + (badgeClass ? " " + badgeClass : "");
       el.innerHTML =
@@ -389,14 +390,14 @@ app.get("/chat-overlay", (req, res) => {
         '<span class="username" style="color:' + (badgeClass === "broadcaster" ? "" : color) + '">' + escapeHtml(displayName) + '</span>' +
         '</div>' +
         '<div class="text">' + renderMessageWithEmotes(message, tags.emotes) + '</div>';
-
+ 
       container.appendChild(el);
-
+ 
       // Limite le nombre de messages visibles
       while (container.children.length > MAX_MESSAGES) {
         container.removeChild(container.firstChild);
       }
-
+ 
       // Disparition automatique après un délai
       setTimeout(() => {
         if (!el.parentNode) return;
@@ -404,13 +405,13 @@ app.get("/chat-overlay", (req, res) => {
         setTimeout(() => el.remove(), 450);
       }, MESSAGE_LIFETIME_MS);
     }
-
+ 
     const client = new tmi.Client({
       channels: [CHANNEL],
     });
-
+ 
     client.connect().catch(console.error);
-
+ 
     client.on("message", (channel, tags, message, self) => {
       addMessage(tags, message);
     });
@@ -419,7 +420,57 @@ app.get("/chat-overlay", (req, res) => {
 </html>
 `);
 });
-
+ 
+app.get("/reglement", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Règlement du jeu - Carthon Plein</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.65; color: #241C15; background:#FBF2D9; }
+    h1 { color: #3C86AA; }
+    h2 { margin-top: 28px; color: #241C15; border-bottom: 2px solid #D9A62B; padding-bottom: 4px; }
+    p, li { font-size: 15px; }
+  </style>
+</head>
+<body>
+  <h1>🐟 Règlement du jeu "Carthon Plein"</h1>
+  <p><em>Dernière mise à jour : 2026</em></p>
+ 
+  <h2>Article 1 — Organisateur</h2>
+  <p>Le jeu "Carthon Plein" est organisé par la chaîne Twitch Carthon Plein, sur la plateforme Twitch, dans le cadre de ses diffusions en direct. Contact : carthonplein@gmail.com</p>
+ 
+  <h2>Article 2 — Participation</h2>
+  <p>La participation est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement.</p>
+ 
+  <h2>Article 3 — Modalités du jeu</h2>
+  <p>Pour participer, le viewer tape la commande "!carthon" dans le chat de la chaîne pendant qu'une partie est ouverte aux inscriptions. Un carton personnel de 16 numéros est alors généré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+ 
+  <h2>Article 4 — Détermination du/des gagnant(s)</h2>
+  <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée lors d'un même tirage, l'organisateur tranche de manière équitable et transparente, annoncée à l'oral et/ou dans le chat.</p>
+ 
+  <h2>Article 5 — Lots</h2>
+  <p>La nature des lots (goodies, cartes cadeaux, etc.) est annoncée par l'organisateur avant ou pendant chaque partie. Les lots ne sont ni échangeables, ni remboursables, ni convertibles en espèces. L'organisateur se réserve le droit de modifier la nature des lots proposés d'une partie à l'autre.</p>
+ 
+  <h2>Article 6 — Participants mineurs</h2>
+  <p>La participation au jeu lui-même est ouverte sans condition d'âge. En revanche, si un gagnant est mineur, la remise du lot est conditionnée à l'accord explicite d'un parent ou représentant légal, qui devra être en copie des échanges relatifs à l'envoi du lot.</p>
+ 
+  <h2>Article 7 — Données personnelles</h2>
+  <p>Les seules données collectées sont le pseudo Twitch (pour le déroulement du jeu) et, en cas de gain d'un lot physique, une adresse postale, demandée uniquement au gagnant et utilisée exclusivement pour l'envoi du lot. Cette adresse n'est conservée que le temps nécessaire à l'expédition, puis supprimée. Aucune donnée n'est partagée avec des tiers. Pour toute question relative à vos données : carthonplein@gmail.com</p>
+ 
+  <h2>Article 8 — Responsabilité</h2>
+  <p>Ce jeu est organisé par la chaîne Carthon Plein et n'est ni sponsorisé, ni géré, ni associé à Twitch Interactive, Inc. L'organisateur ne saurait être tenu responsable en cas de dysfonctionnement technique indépendant de sa volonté (panne, coupure internet, bug de l'extension) empêchant le bon déroulement d'une partie.</p>
+ 
+  <h2>Article 9 — Modification du règlement</h2>
+  <p>L'organisateur se réserve le droit de modifier, suspendre ou annuler le jeu à tout moment si les circonstances l'exigent, sans que sa responsabilité puisse être engagée de ce fait. Toute modification du présent règlement sera annoncée sur la chaîne.</p>
+ 
+  <h2>Article 10 — Droit applicable</h2>
+  <p>Le présent règlement est soumis au droit français. Toute contestation relative à son application devra être adressée à carthonplein@gmail.com avant toute autre démarche.</p>
+</body>
+</html>`);
+});
+ 
 app.get("/state", (req, res) => {
   const drawnSet = new Set(state.drawn);
   res.json({
@@ -432,7 +483,7 @@ app.get("/state", (req, res) => {
     leaderboard: computeLeaderboard(drawnSet),
   });
 });
-
+ 
 app.post("/register", (req, res) => {
   const { pseudo, isSub } = req.body || {};
   if (!pseudo || typeof pseudo !== "string") {
@@ -446,7 +497,7 @@ app.post("/register", (req, res) => {
   const bonusGrid = isSub ? generateCard(pseudo + "#sub") : null;
   res.json({ grid, bonusGrid });
 });
-
+ 
 app.get("/card/:pseudo", (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
@@ -457,14 +508,14 @@ app.get("/card/:pseudo", (req, res) => {
   const bonusGrid = player.isSub ? generateCard(pseudo + "#sub") : null;
   res.json({ registered: true, grid, bonusGrid });
 });
-
+ 
 // ---------- Résolution d'identité (identifiant Twitch réel -> pseudo) ----------
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-
+ 
 let appAccessToken = null;
 let appAccessTokenExpiry = 0;
-
+ 
 async function getAppAccessToken() {
   if (appAccessToken && Date.now() < appAccessTokenExpiry - 60000) return appAccessToken;
   const res = await fetch("https://id.twitch.tv/oauth2/token", {
@@ -481,7 +532,7 @@ async function getAppAccessToken() {
   appAccessTokenExpiry = Date.now() + (data.expires_in || 0) * 1000;
   return appAccessToken;
 }
-
+ 
 app.get("/identify/:userId", async (req, res) => {
   const userId = req.params.userId;
   if (!/^\d+$/.test(userId)) {
@@ -504,7 +555,7 @@ app.get("/identify/:userId", async (req, res) => {
     res.status(500).json({ linked: false, error: "erreur API Twitch" });
   }
 });
-
+ 
 app.post("/draw", (req, res) => {
   if (!checkAdmin(req, res)) return;
   if (gamePhase() === "finished") return res.status(403).json({ error: "partie terminée" });
@@ -517,30 +568,30 @@ app.post("/draw", (req, res) => {
   refreshTiersAndWinner();
   res.json({ drawn: n });
 });
-
+ 
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
   state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true };
   res.json({ ok: true });
 });
-
+ 
 // ---------- Bot de chat : inscription via "!carthon" ----------
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
 const CHANNEL_NAME = process.env.CHANNEL_NAME;
-
+ 
 if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   const client = new tmi.Client({
     identity: { username: BOT_USERNAME, password: BOT_OAUTH_TOKEN },
     channels: [CHANNEL_NAME],
   });
-
+ 
   client.connect().catch((err) => console.log("Erreur de connexion au chat :", err));
-
+ 
   client.on("connected", () => {
     console.log("Bot de chat connecté sur #" + CHANNEL_NAME);
   });
-
+ 
   client.on("message", (channel, tags, message, self) => {
     if (self) return;
     const text = message.trim().toLowerCase();
@@ -558,7 +609,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
 } else {
   console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
 }
-
+ 
 app.listen(PORT, () => {
   console.log("Serveur démarré sur le port " + PORT);
 });
