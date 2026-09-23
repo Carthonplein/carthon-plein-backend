@@ -1,4 +1,3 @@
-
 const express = require("express");
 const cors = require("cors");
 const tmi = require("tmi.js");
@@ -74,12 +73,19 @@ function columnStatus(grid, drawnSet) {
 }
  
 // ---------- État de la partie, en mémoire ----------
+function newGameId() {
+  // identifiant unique par partie, mélangé au pseudo pour générer un carton
+  // différent à chaque partie tout en restant stable pendant une même partie
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+ 
 let state = {
   drawn: [],
   players: [], // { pseudo, isSub }
   tierWinners: { 1: null, 2: null, 3: null },
   winner: null, // { pseudo, cardType }
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
+  gameId: newGameId(),
 };
  
 function gamePhase() {
@@ -91,8 +97,8 @@ function gamePhase() {
 function computeEntrants() {
   const entrants = [];
   for (const p of state.players) {
-    entrants.push({ pseudo: p.pseudo, cardType: "principal", grid: generateCard(p.pseudo) });
-    if (p.isSub) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#sub") });
+    entrants.push({ pseudo: p.pseudo, cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) });
+    if (p.isSub) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
   }
   return entrants;
 }
@@ -100,8 +106,8 @@ function computeEntrants() {
 function computeLeaderboard(drawnSet) {
   const bestByPseudo = new Map();
   for (const p of state.players) {
-    const cards = [{ cardType: "principal", grid: generateCard(p.pseudo) }];
-    if (p.isSub) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#sub") });
+    const cards = [{ cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) }];
+    if (p.isSub) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
     for (const c of cards) {
       const status = columnStatus(c.grid, drawnSet);
       const marked = c.grid.flat().filter((v) => drawnSet.has(v)).length;
@@ -493,8 +499,8 @@ app.post("/register", (req, res) => {
   if (!result.ok) {
     return res.status(403).json({ error: "inscriptions fermées pour cette partie" });
   }
-  const grid = generateCard(pseudo);
-  const bonusGrid = isSub ? generateCard(pseudo + "#sub") : null;
+  const grid = generateCard(pseudo + "#" + state.gameId);
+  const bonusGrid = isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
   res.json({ grid, bonusGrid });
 });
  
@@ -504,8 +510,8 @@ app.get("/card/:pseudo", (req, res) => {
   if (!player) {
     return res.json({ registered: false });
   }
-  const grid = generateCard(pseudo);
-  const bonusGrid = player.isSub ? generateCard(pseudo + "#sub") : null;
+  const grid = generateCard(pseudo + "#" + state.gameId);
+  const bonusGrid = player.isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
   res.json({ registered: true, grid, bonusGrid });
 });
  
@@ -571,7 +577,7 @@ app.post("/draw", (req, res) => {
  
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true, gameId: newGameId() };
   res.json({ ok: true });
 });
  
