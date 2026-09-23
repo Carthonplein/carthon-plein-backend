@@ -79,6 +79,19 @@ function newGameId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
  
+// Nombre minimum de cases manquantes pour compléter une colonne (la plus proche)
+function closestColumnRemaining(grid, drawnSet) {
+  let best = GRID_SIZE;
+  for (let c = 0; c < GRID_SIZE; c++) {
+    let missing = 0;
+    for (let r = 0; r < GRID_SIZE; r++) {
+      if (!drawnSet.has(grid[r][c])) missing++;
+    }
+    if (missing < best) best = missing;
+  }
+  return best;
+}
+ 
 let state = {
   drawn: [],
   players: [], // { pseudo, isSub }
@@ -86,6 +99,7 @@ let state = {
   winner: null, // { pseudo, cardType }
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
   gameId: newGameId(),
+  ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
 };
  
 function gamePhase() {
@@ -479,6 +493,9 @@ app.get("/reglement", (req, res) => {
  
 app.get("/state", (req, res) => {
   const drawnSet = new Set(state.drawn);
+  // ne garde que les chutes de boules récentes (10 dernières secondes)
+  const now = Date.now();
+  state.ballDrops = state.ballDrops.filter((b) => now - b.ts < 10000);
   res.json({
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub })),
@@ -487,6 +504,7 @@ app.get("/state", (req, res) => {
     tierWinners: state.tierWinners,
     winner: state.winner,
     leaderboard: computeLeaderboard(drawnSet),
+    ballDrops: state.ballDrops,
   });
 });
  
@@ -577,7 +595,7 @@ app.post("/draw", (req, res) => {
  
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true, gameId: newGameId() };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true, gameId: newGameId(), ballDrops: [] };
   res.json({ ok: true });
 });
  
@@ -610,6 +628,48 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
       } else {
         client.say(channel, "@" + pseudo + " les inscriptions sont fermées pour cette partie, à la prochaine !");
       }
+      return;
+    }
+ 
+    // "!23" — fait tomber une boule à l'écran si le numéro fait bien
+    // partie du carton du joueur, n'est pas déjà tiré, et qu'il lui reste
+    // 3 numéros ou moins pour compléter une colonne (évite le spam gratuit).
+    const numeroMatch = text.match(/^!(\d{1,2})$/);
+    if (numeroMatch) {
+      const n = parseInt(numeroMatch[1], 10);
+      const pseudo = tags["display-name"] || tags.username;
+      if (n < 1 || n > TOTAL_NUMBERS) return;
+ 
+      const player = state.players.find((p) => p.pseudo === pseudo);
+      if (!player) return;
+ 
+      const drawnSet = new Set(state.drawn);
+      const cardsToCheck = [generateCard(pseudo + "#" + state.gameId)];
+      if (player.isSub) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
+ 
+      let eligible = false;
+      for (const grid of cardsToCheck) {
+        const numberOnCard = grid.some((row) => row.includes(n));
+        const notYetDrawn = !drawnSet.has(n);
+        const totalRemaining = grid.flat().filter((v) => !drawnSet.has(v)).length;
+        const closeEnough = totalRemaining <= 3;
+        if (numberOnCard && notYetDrawn && closeEnough) {
+          eligible = true;
+          break;
+        }
+      }
+ 
+      if (eligible) {
+        state.ballDrops.push({
+          id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+          pseudo,
+          number: n,
+          ts: Date.now(),
+        });
+        // pas de message de confirmation dans le chat : l'effet à l'écran suffit,
+        // évite d'encombrer le chat si plusieurs joueurs l'utilisent d'affilée
+      }
+      return;
     }
   });
 } else {
