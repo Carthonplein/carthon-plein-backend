@@ -97,6 +97,8 @@ let state = {
   players: [], // { pseudo, isSub }
   tierWinners: { 1: null, 2: null, 3: null },
   winner: null, // { pseudo, cardType }
+  pendingFinalists: [], // ex-æquo pour le Carthon Plein, en attente d'un tirage à la roue
+  wheelSpin: null, // { id, names, winnerIndex, ts } — animation de roue partagée avec tous les viewers
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
@@ -104,6 +106,7 @@ let state = {
  
 function gamePhase() {
   if (state.winner) return "finished";
+  if (state.pendingFinalists && state.pendingFinalists.length > 0) return "finished";
   if (state.drawn.length > 0) return "playing";
   return "lobby";
 }
@@ -137,15 +140,24 @@ function computeLeaderboard(drawnSet) {
  
 function refreshTiersAndWinner() {
   if (state.winner) return;
+  if (state.pendingFinalists && state.pendingFinalists.length > 0) return; // en attente du tirage à la roue
   const drawnSet = new Set(state.drawn);
   const entrants = computeEntrants();
   for (let level = 1; level <= GRID_SIZE - 1; level++) {
     if (state.tierWinners[level]) continue;
-    const found = entrants.find((e) => columnStatus(e.grid, drawnSet).count >= level);
-    if (found) state.tierWinners[level] = { pseudo: found.pseudo, cardType: found.cardType };
+    // capture TOUS les joueurs qui atteignent ce palier au même tirage (ex-æquo)
+    const found = entrants.filter((e) => columnStatus(e.grid, drawnSet).count >= level);
+    if (found.length > 0) {
+      state.tierWinners[level] = found.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+    }
   }
-  const finalWinner = entrants.find((e) => columnStatus(e.grid, drawnSet).blackout);
-  if (finalWinner) state.winner = { pseudo: finalWinner.pseudo, cardType: finalWinner.cardType };
+  const finalists = entrants.filter((e) => columnStatus(e.grid, drawnSet).blackout);
+  if (finalists.length === 1) {
+    state.winner = { pseudo: finalists[0].pseudo, cardType: finalists[0].cardType };
+  } else if (finalists.length > 1) {
+    // égalité pour le Carthon Plein : le streamer départagera à la roue
+    state.pendingFinalists = finalists.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+  }
 }
  
 function checkAdmin(req, res) {
@@ -503,6 +515,8 @@ app.get("/state", (req, res) => {
     started: state.started,
     tierWinners: state.tierWinners,
     winner: state.winner,
+    pendingFinalists: state.pendingFinalists,
+    wheelSpin: state.wheelSpin,
     leaderboard: computeLeaderboard(drawnSet),
     ballDrops: state.ballDrops,
     gameId: state.gameId,
@@ -596,8 +610,29 @@ app.post("/draw", (req, res) => {
  
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, started: true, gameId: newGameId(), ballDrops: [] };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [] };
   res.json({ ok: true });
+});
+ 
+app.post("/start-wheel-spin", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { names } = req.body || {};
+  if (!Array.isArray(names) || names.length < 2) {
+    return res.status(400).json({ error: "il faut au moins 2 pseudos" });
+  }
+  const winnerIndex = Math.floor(Math.random() * names.length);
+  const winnerName = names[winnerIndex];
+  const match = (state.pendingFinalists || []).find((f) => f.pseudo === winnerName);
+ 
+  state.winner = match ? { pseudo: match.pseudo, cardType: match.cardType } : { pseudo: winnerName, cardType: "principal" };
+  state.pendingFinalists = [];
+  state.wheelSpin = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    names,
+    winnerIndex,
+    ts: Date.now(),
+  };
+  res.json({ ok: true, winner: state.winner, wheelSpin: state.wheelSpin });
 });
  
 // ---------- Bot de chat : inscription via "!carthon" ----------
