@@ -639,10 +639,16 @@ app.post("/start-wheel-spin", (req, res) => {
     return res.status(400).json({ error: "il faut au moins 2 pseudos" });
   }
   const winnerIndex = Math.floor(Math.random() * names.length);
-  const winnerName = names[winnerIndex];
-  const match = (state.pendingFinalists || []).find((f) => f.pseudo === winnerName);
+  const winnerLabel = names[winnerIndex];
+  // Le label peut être "pseudo" ou "pseudo (bonus)" — utile quand une même
+  // personne est ex-æquo entre son carton principal et son carton bonus.
+  const isBonus = winnerLabel.endsWith(" (bonus)");
+  const winnerPseudo = isBonus ? winnerLabel.slice(0, -" (bonus)".length) : winnerLabel;
+  const match = (state.pendingFinalists || []).find(
+    (f) => f.pseudo === winnerPseudo && (isBonus ? f.cardType === "bonus" : f.cardType !== "bonus")
+  );
  
-  state.winner = match ? { pseudo: match.pseudo, cardType: match.cardType } : { pseudo: winnerName, cardType: "principal" };
+  state.winner = match ? { pseudo: match.pseudo, cardType: match.cardType } : { pseudo: winnerPseudo, cardType: "principal" };
   state.pendingFinalists = [];
   state.wheelSpin = {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
