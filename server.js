@@ -104,6 +104,10 @@ let state = {
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
 };
  
+// Cadres débloqués par pseudo (dons, etc.) — volontairement EN DEHORS de
+// `state` pour ne jamais être effacés par "Nouvelle partie" : { pseudo: ["nature", ...] }
+let unlockedFramesByPseudo = {};
+ 
 function gamePhase() {
   if (state.winner) return "finished";
   if (state.pendingFinalists && state.pendingFinalists.length > 0) return "finished";
@@ -540,12 +544,26 @@ app.post("/register", (req, res) => {
 app.get("/card/:pseudo", (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
+  const unlockedFrames = unlockedFramesByPseudo[pseudo] || [];
   if (!player) {
-    return res.json({ registered: false });
+    return res.json({ registered: false, unlockedFrames });
   }
   const grid = generateCard(pseudo + "#" + state.gameId);
   const bonusGrid = player.isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-  res.json({ registered: true, grid, bonusGrid });
+  res.json({ registered: true, grid, bonusGrid, unlockedFrames });
+});
+ 
+app.post("/grant-frame", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { pseudo, frameKey } = req.body || {};
+  if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
+    return res.status(400).json({ error: "pseudo et frameKey requis" });
+  }
+  if (!unlockedFramesByPseudo[pseudo]) unlockedFramesByPseudo[pseudo] = [];
+  if (!unlockedFramesByPseudo[pseudo].includes(frameKey)) {
+    unlockedFramesByPseudo[pseudo].push(frameKey);
+  }
+  res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
 });
  
 // ---------- Résolution d'identité (identifiant Twitch réel -> pseudo) ----------
