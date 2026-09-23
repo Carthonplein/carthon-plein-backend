@@ -156,11 +156,26 @@ function refreshTiersAndWinner() {
     }
   }
   const finalists = entrants.filter((e) => columnStatus(e.grid, drawnSet).blackout);
-  if (finalists.length === 1) {
-    state.winner = { pseudo: finalists[0].pseudo, cardType: finalists[0].cardType };
-  } else if (finalists.length > 1) {
-    // égalité pour le Carthon Plein : le streamer départagera à la roue
-    state.pendingFinalists = finalists.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+  if (finalists.length > 0) {
+    // Regroupe par pseudo : une même personne gagnant avec son carton
+    // principal ET son carton bonus en même temps ne doit jamais compter
+    // comme une égalité "contre elle-même" — un seul candidat par pseudo,
+    // en privilégiant le carton principal comme représentant.
+    const byPseudo = new Map();
+    finalists.forEach((f) => {
+      const existing = byPseudo.get(f.pseudo);
+      if (!existing || (existing.cardType === "bonus" && f.cardType === "principal")) {
+        byPseudo.set(f.pseudo, f);
+      }
+    });
+    const uniqueFinalists = [...byPseudo.values()];
+ 
+    if (uniqueFinalists.length === 1) {
+      state.winner = { pseudo: uniqueFinalists[0].pseudo, cardType: uniqueFinalists[0].cardType };
+    } else {
+      // vraie égalité entre personnes différentes : le streamer départagera à la roue
+      state.pendingFinalists = uniqueFinalists.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+    }
   }
 }
  
@@ -484,7 +499,7 @@ app.get("/reglement", (req, res) => {
   <p>Pour participer, le viewer tape la commande "!carthon" dans le chat de la chaîne pendant qu'une partie est ouverte aux inscriptions. Un carton personnel de 16 numéros est alors généré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
  
   <h2>Article 4 — Détermination du/des gagnant(s)</h2>
-  <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée lors d'un même tirage, l'organisateur tranche de manière équitable et transparente, annoncée à l'oral et/ou dans le chat.</p>
+  <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
  
   <h2>Article 5 — Lots</h2>
   <p>La nature des lots (goodies, cartes cadeaux, etc.) est annoncée par l'organisateur avant ou pendant chaque partie. Les lots ne sont ni échangeables, ni remboursables, ni convertibles en espèces. L'organisateur se réserve le droit de modifier la nature des lots proposés d'une partie à l'autre.</p>
