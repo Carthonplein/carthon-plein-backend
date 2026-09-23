@@ -505,6 +505,7 @@ app.get("/state", (req, res) => {
     winner: state.winner,
     leaderboard: computeLeaderboard(drawnSet),
     ballDrops: state.ballDrops,
+    gameId: state.gameId,
   });
 });
  
