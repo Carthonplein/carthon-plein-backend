@@ -131,19 +131,20 @@ let displayChoiceByPseudo = {};
 // et titres disponibles (selon ses cadres possédés), pour construire le
 // sélecteur côté viewer.
 function getAvailableStatuses(pseudo) {
-  const frames = unlockedFramesByPseudo[pseudo] || [];
-  const hasSuper = frames.includes(SUPER_FRAME_KEY);
+  const isBroadcaster = CHANNEL_NAME && pseudo && pseudo.toLowerCase() === CHANNEL_NAME.toLowerCase();
+  const frames = isBroadcaster ? [...PURCHASABLE_FRAMES, SUPER_FRAME_KEY] : (unlockedFramesByPseudo[pseudo] || []);
+  const hasSuper = isBroadcaster || frames.includes(SUPER_FRAME_KEY);
  
   const availableBadges = [];
   if (hasSuper) availableBadges.push("super");
-  if (frames.includes("halloween")) availableBadges.push("halloween");
-  if (frames.includes("nature")) availableBadges.push("nature");
+  if (isBroadcaster || frames.includes("halloween")) availableBadges.push("halloween");
+  if (isBroadcaster || frames.includes("nature")) availableBadges.push("nature");
  
-  const ownedPurchasable = PURCHASABLE_FRAMES.filter((f) => frames.includes(f));
+  const ownedPurchasable = isBroadcaster ? PURCHASABLE_FRAMES : PURCHASABLE_FRAMES.filter((f) => frames.includes(f));
   const availableTitles = [];
   if (hasSuper) availableTitles.push("legend");
   if (PURCHASABLE_FRAMES.length > 0 && ownedPurchasable.length === PURCHASABLE_FRAMES.length) availableTitles.push("grand_collector");
-  if (frames.length >= 2) availableTitles.push("collector");
+  if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
  
   return { availableBadges, availableTitles };
 }
