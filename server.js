@@ -11,6 +11,8 @@ const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
  
 const GRID_SIZE = 4;
 const TOTAL_NUMBERS = 75;
+const SUPER_THRESHOLD = 45; // Carthon Plein réussi en 45 tirages ou moins = "Super Carthon Plein"
+const SUPER_FRAME_KEY = "super"; // cadre exclusif, jamais obtenu autrement
  
 // ---------- Génération de carton (même algorithme que le prototype) ----------
 function hashString(str) {
@@ -98,6 +100,7 @@ let state = {
   tierWinners: { 1: null, 2: null, 3: null },
   winner: null, // { pseudo, cardType }
   pendingFinalists: [], // ex-æquo pour le Carthon Plein, en attente d'un tirage à la roue
+  pendingFinalistsDrawCount: null, // nombre de tirages au moment de l'égalité, pour savoir si ce sera un Super Carthon Plein
   wheelSpin: null, // { id, names, winnerIndex, ts } — animation de roue partagée avec tous les viewers
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
   gameId: newGameId(),
@@ -107,6 +110,69 @@ let state = {
 // Cadres débloqués par pseudo (dons, etc.) — volontairement EN DEHORS de
 // `state` pour ne jamais être effacés par "Nouvelle partie" : { pseudo: ["nature", ...] }
 let unlockedFramesByPseudo = {};
+ 
+function grantFrame(pseudo, frameKey) {
+  if (!unlockedFramesByPseudo[pseudo]) unlockedFramesByPseudo[pseudo] = [];
+  if (!unlockedFramesByPseudo[pseudo].includes(frameKey)) {
+    unlockedFramesByPseudo[pseudo].push(frameKey);
+  }
+}
+ 
+// Cadres qu'on peut acheter (par don) — à étendre au fil de futurs cadres.
+// Le cadre "super" n'y figure pas exprès : il se mérite, il ne s'achète pas.
+const PURCHASABLE_FRAMES = ["nature", "halloween"];
+ 
+// Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
+// ceux disponibles) — comme unlockedFramesByPseudo, en mémoire uniquement
+// pour l'instant, donc remis à zéro à chaque redémarrage du serveur.
+let displayChoiceByPseudo = {};
+ 
+// Calcule tout ce qu'un pseudo a le droit d'afficher : la liste des badges
+// et titres disponibles (selon ses cadres possédés), pour construire le
+// sélecteur côté viewer.
+function getAvailableStatuses(pseudo) {
+  const frames = unlockedFramesByPseudo[pseudo] || [];
+  const hasSuper = frames.includes(SUPER_FRAME_KEY);
+ 
+  const availableBadges = [];
+  if (hasSuper) availableBadges.push("super");
+  if (frames.includes("halloween")) availableBadges.push("halloween");
+  if (frames.includes("nature")) availableBadges.push("nature");
+ 
+  const ownedPurchasable = PURCHASABLE_FRAMES.filter((f) => frames.includes(f));
+  const availableTitles = [];
+  if (hasSuper) availableTitles.push("legend");
+  if (PURCHASABLE_FRAMES.length > 0 && ownedPurchasable.length === PURCHASABLE_FRAMES.length) availableTitles.push("grand_collector");
+  if (frames.length >= 2) availableTitles.push("collector");
+ 
+  return { availableBadges, availableTitles };
+}
+ 
+// Calcule le badge + titre RÉELLEMENT affichés publiquement pour un pseudo
+// (classement, paliers, gagnant, boules "!numero"...) : le choix du viewer
+// s'il en a fait un et qu'il y a toujours droit, sinon un choix par défaut
+// (priorité super > halloween > nature pour le badge, le titre le plus
+// prestigieux disponible pour le titre).
+function getPublicStatus(pseudo) {
+  const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
+  const choice = displayChoiceByPseudo[pseudo] || {};
+ 
+  let badge = null;
+  if (choice.badge && (choice.badge === "none" || availableBadges.includes(choice.badge))) {
+    badge = choice.badge === "none" ? null : choice.badge;
+  } else {
+    badge = availableBadges[0] || null; // priorité déjà respectée par l'ordre de construction
+  }
+ 
+  let title = null;
+  if (choice.title && (choice.title === "none" || availableTitles.includes(choice.title))) {
+    title = choice.title === "none" ? null : choice.title;
+  } else {
+    title = availableTitles[0] || null;
+  }
+ 
+  return { badge, title };
+}
  
 function gamePhase() {
   if (state.winner) return "finished";
@@ -139,7 +205,10 @@ function computeLeaderboard(drawnSet) {
       if (better) bestByPseudo.set(p.pseudo, { pseudo: p.pseudo, cardType: c.cardType, count: status.count, remaining });
     }
   }
-  return [...bestByPseudo.values()].sort((a, b) => b.count - a.count || a.remaining - b.remaining).slice(0, 3);
+  return [...bestByPseudo.values()]
+    .sort((a, b) => b.count - a.count || a.remaining - b.remaining)
+    .slice(0, 3)
+    .map((e) => ({ ...e, ...getPublicStatus(e.pseudo) }));
 }
  
 function refreshTiersAndWinner() {
@@ -152,7 +221,7 @@ function refreshTiersAndWinner() {
     // capture TOUS les joueurs qui atteignent ce palier au même tirage (ex-æquo)
     const found = entrants.filter((e) => columnStatus(e.grid, drawnSet).count >= level);
     if (found.length > 0) {
-      state.tierWinners[level] = found.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+      state.tierWinners[level] = found.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType, ...getPublicStatus(e.pseudo) }));
     }
   }
   const finalists = entrants.filter((e) => columnStatus(e.grid, drawnSet).blackout);
@@ -171,10 +240,13 @@ function refreshTiersAndWinner() {
     const uniqueFinalists = [...byPseudo.values()];
  
     if (uniqueFinalists.length === 1) {
-      state.winner = { pseudo: uniqueFinalists[0].pseudo, cardType: uniqueFinalists[0].cardType };
+      const isSuper = state.drawn.length <= SUPER_THRESHOLD;
+      if (isSuper) grantFrame(uniqueFinalists[0].pseudo, SUPER_FRAME_KEY);
+      state.winner = { pseudo: uniqueFinalists[0].pseudo, cardType: uniqueFinalists[0].cardType, isSuper, ...getPublicStatus(uniqueFinalists[0].pseudo) };
     } else {
       // vraie égalité entre personnes différentes : le streamer départagera à la roue
       state.pendingFinalists = uniqueFinalists.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType }));
+      state.pendingFinalistsDrawCount = state.drawn.length; // conservé pour savoir si ce sera un Super Carthon Plein une fois le tirage résolu
     }
   }
 }
@@ -560,12 +632,32 @@ app.get("/card/:pseudo", (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
   const unlockedFrames = unlockedFramesByPseudo[pseudo] || [];
+  const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
+  const displayChoice = displayChoiceByPseudo[pseudo] || {};
   if (!player) {
-    return res.json({ registered: false, unlockedFrames });
+    return res.json({ registered: false, unlockedFrames, availableBadges, availableTitles, displayChoice });
   }
   const grid = generateCard(pseudo + "#" + state.gameId);
   const bonusGrid = player.isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-  res.json({ registered: true, grid, bonusGrid, unlockedFrames });
+  res.json({ registered: true, grid, bonusGrid, unlockedFrames, availableBadges, availableTitles, displayChoice });
+});
+ 
+app.post("/set-display-choice", (req, res) => {
+  const { pseudo, badge, title } = req.body || {};
+  if (!pseudo || typeof pseudo !== "string") {
+    return res.status(400).json({ error: "pseudo manquant" });
+  }
+  const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
+  if (badge !== undefined && badge !== "none" && badge !== null && !availableBadges.includes(badge)) {
+    return res.status(400).json({ error: "badge non disponible pour ce pseudo" });
+  }
+  if (title !== undefined && title !== "none" && title !== null && !availableTitles.includes(title)) {
+    return res.status(400).json({ error: "titre non disponible pour ce pseudo" });
+  }
+  if (!displayChoiceByPseudo[pseudo]) displayChoiceByPseudo[pseudo] = {};
+  if (badge !== undefined) displayChoiceByPseudo[pseudo].badge = badge || "none";
+  if (title !== undefined) displayChoiceByPseudo[pseudo].title = title || "none";
+  res.json({ ok: true, displayChoice: displayChoiceByPseudo[pseudo] });
 });
  
 app.post("/grant-frame", (req, res) => {
@@ -643,7 +735,7 @@ app.post("/draw", (req, res) => {
  
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [] };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [] };
   res.json({ ok: true });
 });
  
@@ -663,8 +755,14 @@ app.post("/start-wheel-spin", (req, res) => {
     (f) => f.pseudo === winnerPseudo && (isBonus ? f.cardType === "bonus" : f.cardType !== "bonus")
   );
  
-  state.winner = match ? { pseudo: match.pseudo, cardType: match.cardType } : { pseudo: winnerPseudo, cardType: "principal" };
+  const isSuper = (state.pendingFinalistsDrawCount ?? state.drawn.length) <= SUPER_THRESHOLD;
+  const finalWinnerPseudo = match ? match.pseudo : winnerPseudo;
+  if (isSuper) grantFrame(finalWinnerPseudo, SUPER_FRAME_KEY);
+  state.winner = match
+    ? { pseudo: match.pseudo, cardType: match.cardType, isSuper, ...getPublicStatus(finalWinnerPseudo) }
+    : { pseudo: winnerPseudo, cardType: "principal", isSuper, ...getPublicStatus(finalWinnerPseudo) };
   state.pendingFinalists = [];
+  state.pendingFinalistsDrawCount = null;
   state.wheelSpin = {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     names,
@@ -740,6 +838,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
           pseudo,
           number: n,
           ts: Date.now(),
+          ...getPublicStatus(pseudo),
         });
         // pas de message de confirmation dans le chat : l'effet à l'écran suffit,
         // évite d'encombrer le chat si plusieurs joueurs l'utilisent d'affilée
