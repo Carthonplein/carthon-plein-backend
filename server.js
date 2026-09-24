@@ -163,6 +163,17 @@ const PURCHASABLE_FRAMES = ["nature", "halloween"];
 // ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
 let displayChoiceByPseudo = {};
  
+// Nombre de victoires par pseudo — { pseudo: { total: N, super: M } } —
+// persisté sur Redis comme le reste, pour les titres basés sur les gains.
+let winsByPseudo = {};
+ 
+function recordWin(pseudo, isSuper) {
+  if (!winsByPseudo[pseudo]) winsByPseudo[pseudo] = { total: 0, super: 0 };
+  winsByPseudo[pseudo].total += 1;
+  if (isSuper) winsByPseudo[pseudo].super += 1;
+  redisSetJSON("winsByPseudo", winsByPseudo);
+}
+ 
 // Calcule tout ce qu'un pseudo a le droit d'afficher : la liste des badges
 // et titres disponibles (selon ses cadres possédés), pour construire le
 // sélecteur côté viewer.
@@ -170,6 +181,7 @@ function getAvailableStatuses(pseudo) {
   const isBroadcaster = CHANNEL_NAME && pseudo && pseudo.toLowerCase() === CHANNEL_NAME.toLowerCase();
   const frames = isBroadcaster ? [...PURCHASABLE_FRAMES, SUPER_FRAME_KEY] : (unlockedFramesByPseudo[pseudo] || []);
   const hasSuper = isBroadcaster || frames.includes(SUPER_FRAME_KEY);
+  const wins = isBroadcaster ? { total: 3, super: 2 } : (winsByPseudo[pseudo] || { total: 0, super: 0 });
  
   const availableBadges = [];
   if (hasSuper) availableBadges.push("super");
@@ -177,9 +189,16 @@ function getAvailableStatuses(pseudo) {
   if (isBroadcaster || frames.includes("nature")) availableBadges.push("nature");
  
   const ownedPurchasable = isBroadcaster ? PURCHASABLE_FRAMES : PURCHASABLE_FRAMES.filter((f) => frames.includes(f));
+ 
+  // Du plus prestigieux au moins prestigieux — l'ordre définit aussi le
+  // choix par défaut (le premier de la liste) tant que le viewer n'a rien
+  // choisi lui-même dans son sélecteur.
   const availableTitles = [];
+  if (wins.super >= 2) availableTitles.push("mythique");
   if (hasSuper) availableTitles.push("legend");
+  if (wins.total >= 3) availableTitles.push("multi_champion");
   if (PURCHASABLE_FRAMES.length > 0 && ownedPurchasable.length === PURCHASABLE_FRAMES.length) availableTitles.push("grand_collector");
+  if (wins.total >= 1) availableTitles.push("chanceux");
   if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
  
   return { availableBadges, availableTitles };
@@ -279,6 +298,7 @@ function refreshTiersAndWinner() {
     if (uniqueFinalists.length === 1) {
       const isSuper = state.drawn.length <= SUPER_THRESHOLD;
       if (isSuper) grantFrame(uniqueFinalists[0].pseudo, SUPER_FRAME_KEY);
+      recordWin(uniqueFinalists[0].pseudo, isSuper);
       state.winner = { pseudo: uniqueFinalists[0].pseudo, cardType: uniqueFinalists[0].cardType, isSuper, ...getPublicStatus(uniqueFinalists[0].pseudo) };
     } else {
       // vraie égalité entre personnes différentes : le streamer départagera à la roue
@@ -793,6 +813,7 @@ app.post("/start-wheel-spin", (req, res) => {
   const isSuper = (state.pendingFinalistsDrawCount ?? state.drawn.length) <= SUPER_THRESHOLD;
   const finalWinnerPseudo = match ? match.pseudo : winnerPseudo;
   if (isSuper) grantFrame(finalWinnerPseudo, SUPER_FRAME_KEY);
+  recordWin(finalWinnerPseudo, isSuper);
   state.winner = match
     ? { pseudo: match.pseudo, cardType: match.cardType, isSuper, ...getPublicStatus(finalWinnerPseudo) }
     : { pseudo: winnerPseudo, cardType: "principal", isSuper, ...getPublicStatus(finalWinnerPseudo) };
@@ -888,6 +909,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
 (async () => {
   unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
   displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
+  winsByPseudo = await redisGetJSON("winsByPseudo", {});
   console.log(
     REDIS_ENABLED
       ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
