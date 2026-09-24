@@ -208,19 +208,18 @@ function getAvailableStatuses(pseudo) {
 }
  
 // Calcule le badge + titre RÉELLEMENT affichés publiquement pour un pseudo
-// (classement, paliers, gagnant, boules "!numero"...) : le choix du viewer
-// s'il en a fait un et qu'il y a toujours droit, sinon un choix par défaut
-// (priorité super > halloween > nature pour le badge, le titre le plus
-// prestigieux disponible pour le titre).
+// (classement, paliers, gagnant, boules "!numero"...). Le badge suit
+// automatiquement le cadre équipé par le viewer (pas de choix séparé) ; le
+// titre reste un choix indépendant parmi ceux disponibles.
 function getPublicStatus(pseudo) {
   const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
   const choice = displayChoiceByPseudo[pseudo] || {};
  
   let badge = null;
-  if (choice.badge && (choice.badge === "none" || availableBadges.includes(choice.badge))) {
-    badge = choice.badge === "none" ? null : choice.badge;
+  if (choice.frame && (choice.frame === "none" || availableBadges.includes(choice.frame))) {
+    badge = choice.frame === "none" ? null : choice.frame;
   } else {
-    badge = availableBadges[0] || null; // priorité déjà respectée par l'ordre de construction
+    badge = availableBadges[0] || null; // tant que rien n'a encore été équipé, priorité par défaut
   }
  
   let title = null;
@@ -703,19 +702,21 @@ app.get("/card/:pseudo", (req, res) => {
 });
  
 app.post("/set-display-choice", (req, res) => {
-  const { pseudo, badge, title } = req.body || {};
+  const { pseudo, frame, title } = req.body || {};
   if (!pseudo || typeof pseudo !== "string") {
     return res.status(400).json({ error: "pseudo manquant" });
   }
   const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
-  if (badge !== undefined && badge !== "none" && badge !== null && !availableBadges.includes(badge)) {
-    return res.status(400).json({ error: "badge non disponible pour ce pseudo" });
+  // Le badge n'est plus choisi séparément : il suit automatiquement le
+  // cadre équipé, donc on valide "frame" contre les mêmes clés que les badges.
+  if (frame !== undefined && frame !== "none" && frame !== null && !availableBadges.includes(frame)) {
+    return res.status(400).json({ error: "cadre non disponible pour ce pseudo" });
   }
   if (title !== undefined && title !== "none" && title !== null && !availableTitles.includes(title)) {
     return res.status(400).json({ error: "titre non disponible pour ce pseudo" });
   }
   if (!displayChoiceByPseudo[pseudo]) displayChoiceByPseudo[pseudo] = {};
-  if (badge !== undefined) displayChoiceByPseudo[pseudo].badge = badge || "none";
+  if (frame !== undefined) displayChoiceByPseudo[pseudo].frame = frame || "none";
   if (title !== undefined) displayChoiceByPseudo[pseudo].title = title || "none";
   redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
   res.json({ ok: true, displayChoice: displayChoiceByPseudo[pseudo] });
