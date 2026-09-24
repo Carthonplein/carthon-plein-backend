@@ -9,6 +9,41 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
  
+// ---------- Stockage persistant (Upstash Redis) ----------
+// Sert uniquement à ce qui ne doit JAMAIS être perdu (cadres/badges/titres
+// possédés par les viewers) — indépendant de Render, survit à tous les
+// redéploiements/redémarrages du serveur, contrairement au reste de `state`.
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_ENABLED = !!(REDIS_URL && REDIS_TOKEN);
+ 
+async function redisGetJSON(key, fallback) {
+  if (!REDIS_ENABLED) return fallback;
+  try {
+    const res = await fetch(REDIS_URL + "/get/" + encodeURIComponent(key), {
+      headers: { Authorization: "Bearer " + REDIS_TOKEN },
+    });
+    const data = await res.json();
+    return data.result ? JSON.parse(data.result) : fallback;
+  } catch (e) {
+    console.error("Erreur lecture Redis (" + key + ") :", e.message);
+    return fallback;
+  }
+}
+ 
+async function redisSetJSON(key, value) {
+  if (!REDIS_ENABLED) return;
+  try {
+    await fetch(REDIS_URL + "/set/" + encodeURIComponent(key), {
+      method: "POST",
+      headers: { Authorization: "Bearer " + REDIS_TOKEN },
+      body: JSON.stringify(value),
+    });
+  } catch (e) {
+    console.error("Erreur écriture Redis (" + key + ") :", e.message);
+  }
+}
+ 
 const GRID_SIZE = 4;
 const TOTAL_NUMBERS = 75;
 const SUPER_THRESHOLD = 45; // Carthon Plein réussi en 45 tirages ou moins = "Super Carthon Plein"
@@ -109,12 +144,14 @@ let state = {
  
 // Cadres débloqués par pseudo (dons, etc.) — volontairement EN DEHORS de
 // `state` pour ne jamais être effacés par "Nouvelle partie" : { pseudo: ["nature", ...] }
+// Chargé depuis Redis au démarrage, chaque écriture est aussi renvoyée là-bas.
 let unlockedFramesByPseudo = {};
  
 function grantFrame(pseudo, frameKey) {
   if (!unlockedFramesByPseudo[pseudo]) unlockedFramesByPseudo[pseudo] = [];
   if (!unlockedFramesByPseudo[pseudo].includes(frameKey)) {
     unlockedFramesByPseudo[pseudo].push(frameKey);
+    redisSetJSON("unlockedFramesByPseudo", unlockedFramesByPseudo);
   }
 }
  
@@ -123,8 +160,7 @@ function grantFrame(pseudo, frameKey) {
 const PURCHASABLE_FRAMES = ["nature", "halloween"];
  
 // Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
-// ceux disponibles) — comme unlockedFramesByPseudo, en mémoire uniquement
-// pour l'instant, donc remis à zéro à chaque redémarrage du serveur.
+// ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
 let displayChoiceByPseudo = {};
  
 // Calcule tout ce qu'un pseudo a le droit d'afficher : la liste des badges
@@ -658,6 +694,7 @@ app.post("/set-display-choice", (req, res) => {
   if (!displayChoiceByPseudo[pseudo]) displayChoiceByPseudo[pseudo] = {};
   if (badge !== undefined) displayChoiceByPseudo[pseudo].badge = badge || "none";
   if (title !== undefined) displayChoiceByPseudo[pseudo].title = title || "none";
+  redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
   res.json({ ok: true, displayChoice: displayChoiceByPseudo[pseudo] });
 });
  
@@ -667,10 +704,7 @@ app.post("/grant-frame", (req, res) => {
   if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
     return res.status(400).json({ error: "pseudo et frameKey requis" });
   }
-  if (!unlockedFramesByPseudo[pseudo]) unlockedFramesByPseudo[pseudo] = [];
-  if (!unlockedFramesByPseudo[pseudo].includes(frameKey)) {
-    unlockedFramesByPseudo[pseudo].push(frameKey);
-  }
+  grantFrame(pseudo, frameKey);
   res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
 });
  
@@ -851,6 +885,16 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
 }
  
-app.listen(PORT, () => {
-  console.log("Serveur démarré sur le port " + PORT);
-});
+(async () => {
+  unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
+  displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
+  console.log(
+    REDIS_ENABLED
+      ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
+      : "⚠️ Redis non configuré (UPSTASH_REDIS_REST_URL/TOKEN manquants) — les cadres/badges/titres ne survivront PAS à un redémarrage."
+  );
+ 
+  app.listen(PORT, () => {
+    console.log("Serveur démarré sur le port " + PORT);
+  });
+})();
