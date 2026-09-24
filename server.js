@@ -157,7 +157,9 @@ function grantFrame(pseudo, frameKey) {
  
 // Cadres qu'on peut acheter (par don) — à étendre au fil de futurs cadres.
 // Le cadre "super" n'y figure pas exprès : il se mérite, il ne s'achète pas.
-const PURCHASABLE_FRAMES = ["nature", "halloween"];
+// Ordre = priorité par défaut du badge (le premier possédé dans cet ordre
+// gagne, tant que le viewer n'a rien choisi lui-même).
+const PURCHASABLE_FRAMES = ["signature", "noel", "valentine", "easter", "pirate", "space", "halloween", "nature"];
  
 // Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
 // ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
@@ -185,8 +187,9 @@ function getAvailableStatuses(pseudo) {
  
   const availableBadges = [];
   if (hasSuper) availableBadges.push("super");
-  if (isBroadcaster || frames.includes("halloween")) availableBadges.push("halloween");
-  if (isBroadcaster || frames.includes("nature")) availableBadges.push("nature");
+  PURCHASABLE_FRAMES.forEach((key) => {
+    if (isBroadcaster || frames.includes(key)) availableBadges.push(key);
+  });
  
   const ownedPurchasable = isBroadcaster ? PURCHASABLE_FRAMES : PURCHASABLE_FRAMES.filter((f) => frames.includes(f));
  
