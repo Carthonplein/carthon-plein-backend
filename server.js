@@ -259,12 +259,12 @@ function computeLeaderboard(drawnSet) {
       const remaining = GRID_SIZE * GRID_SIZE - marked;
       const current = bestByPseudo.get(p.pseudo);
       const better =
-        !current || status.count > current.count || (status.count === current.count && remaining < current.remaining);
+        !current || remaining < current.remaining || (remaining === current.remaining && status.count > current.count);
       if (better) bestByPseudo.set(p.pseudo, { pseudo: p.pseudo, cardType: c.cardType, count: status.count, remaining });
     }
   }
   return [...bestByPseudo.values()]
-    .sort((a, b) => b.count - a.count || a.remaining - b.remaining)
+    .sort((a, b) => a.remaining - b.remaining || b.count - a.count)
     .slice(0, 3)
     .map((e) => ({ ...e, ...getPublicStatus(e.pseudo) }));
 }
