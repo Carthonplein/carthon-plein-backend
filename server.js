@@ -248,7 +248,9 @@ function computeEntrants() {
   return entrants;
 }
  
-function computeLeaderboard(drawnSet) {
+// Classement complet (pas seulement le top 3) : un seul carton par pseudo
+// (le meilleur des deux si abonné), trié par proximité du Carthon Plein.
+function computeFullStandings(drawnSet) {
   const bestByPseudo = new Map();
   for (const p of state.players) {
     const cards = [{ cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) }];
@@ -263,10 +265,23 @@ function computeLeaderboard(drawnSet) {
       if (better) bestByPseudo.set(p.pseudo, { pseudo: p.pseudo, cardType: c.cardType, count: status.count, remaining });
     }
   }
-  return [...bestByPseudo.values()]
-    .sort((a, b) => a.remaining - b.remaining || b.count - a.count)
+  return [...bestByPseudo.values()].sort((a, b) => a.remaining - b.remaining || b.count - a.count);
+}
+ 
+function computeLeaderboard(drawnSet) {
+  return computeFullStandings(drawnSet)
     .slice(0, 3)
     .map((e) => ({ ...e, ...getPublicStatus(e.pseudo) }));
+}
+ 
+// Position (1-based) et numéros restants d'un pseudo précis dans le
+// classement complet — utilisé pour lui afficher son propre rang quand il
+// n'est pas dans le top 3 visible par tous.
+function getStandingFor(pseudo, drawnSet) {
+  const standings = computeFullStandings(drawnSet);
+  const idx = standings.findIndex((e) => e.pseudo === pseudo);
+  if (idx === -1) return null;
+  return { rank: idx + 1, total: standings.length, remaining: standings[idx].remaining, count: standings[idx].count };
 }
  
 function refreshTiersAndWinner() {
@@ -698,7 +713,9 @@ app.get("/card/:pseudo", (req, res) => {
   }
   const grid = generateCard(pseudo + "#" + state.gameId);
   const bonusGrid = player.isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-  res.json({ registered: true, grid, bonusGrid, unlockedFrames, availableBadges, availableTitles, displayChoice });
+  const drawnSet = new Set(state.drawn);
+  const myStanding = getStandingFor(pseudo, drawnSet);
+  res.json({ registered: true, grid, bonusGrid, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
 });
  
 app.post("/set-display-choice", (req, res) => {
