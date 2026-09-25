@@ -284,6 +284,22 @@ function getStandingFor(pseudo, drawnSet) {
   return { rank: idx + 1, total: standings.length, remaining: standings[idx].remaining, count: standings[idx].count };
 }
  
+// Regroupe une liste de cartons par pseudo : une même personne gagnant /
+// atteignant un palier avec son carton principal ET son carton bonus en
+// même temps ne doit jamais compter comme une égalité "contre elle-même" —
+// un seul candidat par pseudo, en privilégiant le carton principal comme
+// représentant.
+function dedupeByPseudo(list) {
+  const byPseudo = new Map();
+  list.forEach((f) => {
+    const existing = byPseudo.get(f.pseudo);
+    if (!existing || (existing.cardType === "bonus" && f.cardType === "principal")) {
+      byPseudo.set(f.pseudo, f);
+    }
+  });
+  return [...byPseudo.values()];
+}
+ 
 function refreshTiersAndWinner() {
   if (state.winner) return;
   if (state.pendingFinalists && state.pendingFinalists.length > 0) return; // en attente du tirage à la roue
@@ -291,26 +307,17 @@ function refreshTiersAndWinner() {
   const entrants = computeEntrants();
   for (let level = 1; level <= GRID_SIZE - 1; level++) {
     if (state.tierWinners[level]) continue;
-    // capture TOUS les joueurs qui atteignent ce palier au même tirage (ex-æquo)
-    const found = entrants.filter((e) => columnStatus(e.grid, drawnSet).count >= level);
+    // capture TOUS les joueurs qui atteignent ce palier au même tirage (ex-æquo),
+    // en excluant les "égalités" entre le carton principal et le carton bonus
+    // d'une seule et même personne.
+    const found = dedupeByPseudo(entrants.filter((e) => columnStatus(e.grid, drawnSet).count >= level));
     if (found.length > 0) {
       state.tierWinners[level] = found.map((e) => ({ pseudo: e.pseudo, cardType: e.cardType, ...getPublicStatus(e.pseudo) }));
     }
   }
   const finalists = entrants.filter((e) => columnStatus(e.grid, drawnSet).blackout);
   if (finalists.length > 0) {
-    // Regroupe par pseudo : une même personne gagnant avec son carton
-    // principal ET son carton bonus en même temps ne doit jamais compter
-    // comme une égalité "contre elle-même" — un seul candidat par pseudo,
-    // en privilégiant le carton principal comme représentant.
-    const byPseudo = new Map();
-    finalists.forEach((f) => {
-      const existing = byPseudo.get(f.pseudo);
-      if (!existing || (existing.cardType === "bonus" && f.cardType === "principal")) {
-        byPseudo.set(f.pseudo, f);
-      }
-    });
-    const uniqueFinalists = [...byPseudo.values()];
+    const uniqueFinalists = dedupeByPseudo(finalists);
  
     if (uniqueFinalists.length === 1) {
       const isSuper = state.drawn.length <= SUPER_THRESHOLD;
