@@ -169,6 +169,12 @@ let displayChoiceByPseudo = {};
 // persisté sur Redis comme le reste, pour les titres basés sur les gains.
 let winsByPseudo = {};
  
+// Contrôlé UNIQUEMENT par le streamer/modérateur (bouton admin), mais
+// s'applique à TOUS les viewers : masque entièrement l'overlay pour eux.
+// Volontairement en dehors de `state` pour survivre à "Nouvelle partie",
+// et persisté sur Redis pour survivre aussi à un redémarrage du serveur.
+let overlayVisible = true;
+ 
 function recordWin(pseudo, isSuper) {
   if (!winsByPseudo[pseudo]) winsByPseudo[pseudo] = { total: 0, super: 0 };
   winsByPseudo[pseudo].total += 1;
@@ -692,6 +698,7 @@ app.get("/state", (req, res) => {
     leaderboard: computeLeaderboard(drawnSet),
     ballDrops: state.ballDrops,
     gameId: state.gameId,
+    overlayVisible,
   });
 });
  
@@ -744,6 +751,14 @@ app.post("/set-display-choice", (req, res) => {
   if (title !== undefined) displayChoiceByPseudo[pseudo].title = title || "none";
   redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
   res.json({ ok: true, displayChoice: displayChoiceByPseudo[pseudo] });
+});
+ 
+app.post("/toggle-overlay", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { visible } = req.body || {};
+  overlayVisible = typeof visible === "boolean" ? visible : !overlayVisible;
+  redisSetJSON("overlayVisible", overlayVisible);
+  res.json({ ok: true, overlayVisible });
 });
  
 app.post("/grant-frame", (req, res) => {
@@ -938,6 +953,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
   displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
   winsByPseudo = await redisGetJSON("winsByPseudo", {});
+  overlayVisible = await redisGetJSON("overlayVisible", true);
   console.log(
     REDIS_ENABLED
       ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
