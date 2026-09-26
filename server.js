@@ -871,27 +871,6 @@ app.post("/start-wheel-spin", (req, res) => {
   res.json({ ok: true, winner: state.winner, wheelSpin: state.wheelSpin });
 });
 
-// Déclenche une roue de départage "à blanc", pour que le streamer puisse
-// tester le visuel/l'animation sans devoir provoquer une vraie égalité en
-// jeu. Ne touche ni aux stats (recordWin/grantFrame), ni à pendingFinalists,
-// ni à state.winner — c'est purement une animation de démo.
-app.post("/test-wheel-spin", (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  let { names } = req.body || {};
-  if (!Array.isArray(names) || names.length < 2) {
-    names = ["Test 1", "Test 2", "Test 3", "Test 4"];
-  }
-  const winnerIndex = Math.floor(Math.random() * names.length);
-  state.wheelSpin = {
-    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    names,
-    winnerIndex,
-    ts: Date.now(),
-    isTest: true, // pas de vrai gagnant : le client n'affiche pas l'annonce
-  };
-  res.json({ ok: true, wheelSpin: state.wheelSpin });
-});
-
 // ---------- Bot de chat : inscription via "!carthon" ----------
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
