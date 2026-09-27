@@ -169,6 +169,50 @@ let displayChoiceByPseudo = {};
 // persisté sur Redis comme le reste, pour les titres basés sur les gains.
 let winsByPseudo = {};
 
+// Dernier pseudo connu pour chaque identifiant Twitch STABLE (tags["user-id"]
+// des messages de chat) — { twitchUserId: "pseudo" }. Contrairement au
+// pseudo, cet ID ne change jamais, même si le viewer renomme son compte
+// Twitch. Permet de détecter un renommage et de migrer automatiquement les
+// cadres/victoires/préférences vers le nouveau pseudo au lieu de les perdre.
+// Ne concerne que l'inscription via le bot de chat ("!carthon"), seule voie
+// qui fournit cet ID ; l'inscription manuelle depuis le panneau ne le fait
+// pas (le viewer y tape un pseudo à la main, sans lien avec son compte).
+let pseudoByUserId = {};
+
+function reconcilePseudoRename(userId, newPseudo) {
+  if (!userId || !newPseudo) return;
+  const oldPseudo = pseudoByUserId[userId];
+  if (oldPseudo && oldPseudo !== newPseudo) {
+    // Renommage détecté : on rapatrie les données de l'ancien pseudo sur le
+    // nouveau (fusion si le nouveau pseudo avait déjà quelque chose, ce qui
+    // peut arriver si quelqu'un d'autre a entre-temps pris cet ancien pseudo).
+    if (unlockedFramesByPseudo[oldPseudo]) {
+      const merged = Array.from(
+        new Set([...(unlockedFramesByPseudo[newPseudo] || []), ...unlockedFramesByPseudo[oldPseudo]])
+      );
+      unlockedFramesByPseudo[newPseudo] = merged;
+      delete unlockedFramesByPseudo[oldPseudo];
+      redisSetJSON("unlockedFramesByPseudo", unlockedFramesByPseudo);
+    }
+    if (winsByPseudo[oldPseudo]) {
+      const prevNew = winsByPseudo[newPseudo] || { total: 0, super: 0 };
+      const prevOld = winsByPseudo[oldPseudo];
+      winsByPseudo[newPseudo] = { total: prevNew.total + prevOld.total, super: prevNew.super + prevOld.super };
+      delete winsByPseudo[oldPseudo];
+      redisSetJSON("winsByPseudo", winsByPseudo);
+    }
+    if (displayChoiceByPseudo[oldPseudo] && !displayChoiceByPseudo[newPseudo]) {
+      displayChoiceByPseudo[newPseudo] = displayChoiceByPseudo[oldPseudo];
+      delete displayChoiceByPseudo[oldPseudo];
+      redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
+    }
+  }
+  if (pseudoByUserId[userId] !== newPseudo) {
+    pseudoByUserId[userId] = newPseudo;
+    redisSetJSON("pseudoByUserId", pseudoByUserId);
+  }
+}
+
 // Contrôlé UNIQUEMENT par le streamer/modérateur (bouton admin), mais
 // s'applique à TOUS les viewers : masque entièrement l'overlay pour eux.
 // Volontairement en dehors de `state` pour survivre à "Nouvelle partie",
@@ -894,6 +938,10 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
     if (text === "!carthon") {
       const pseudo = tags["display-name"] || tags.username;
       const isSub = !!tags.subscriber;
+      // tags["user-id"] est l'identifiant Twitch stable du viewer (ne change
+      // jamais, contrairement au pseudo) : sert à détecter un renommage et à
+      // rapatrier ses cadres/victoires sur le nouveau pseudo automatiquement.
+      reconcilePseudoRename(tags["user-id"], pseudo);
       const result = registerPlayerInternal(pseudo, isSub);
       if (result.ok) {
         client.say(channel, "@" + pseudo + " tu es inscrit(e) au Carthon Plein 🐟 va voir ton carton dans le panneau de l'extension !");
@@ -953,6 +1001,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
   displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
   winsByPseudo = await redisGetJSON("winsByPseudo", {});
+  pseudoByUserId = await redisGetJSON("pseudoByUserId", {});
   overlayVisible = await redisGetJSON("overlayVisible", true);
   console.log(
     REDIS_ENABLED
