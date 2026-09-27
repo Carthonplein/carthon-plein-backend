@@ -851,11 +851,18 @@ app.post("/toggle-overlay", (req, res) => {
   res.json({ ok: true, overlayVisible });
 });
 
+// Cadres jamais distribuables à la main (uniquement gagnés automatiquement,
+// ex: Super Carthon Plein) — miroir de "exclusive: true" côté overlay.js.
+const EXCLUSIVE_FRAMES = ["super"];
+
 app.post("/grant-frame", (req, res) => {
   if (!checkAdmin(req, res)) return;
   const { pseudo, frameKey } = req.body || {};
   if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
     return res.status(400).json({ error: "pseudo et frameKey requis" });
+  }
+  if (EXCLUSIVE_FRAMES.includes(frameKey)) {
+    return res.status(400).json({ error: "ce cadre ne peut pas être distribué manuellement, il ne s'obtient qu'en le gagnant" });
   }
   grantFrame(pseudo, frameKey);
   res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
