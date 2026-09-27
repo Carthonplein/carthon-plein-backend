@@ -1,13 +1,52 @@
 const express = require("express");
 const cors = require("cors");
 const tmi = require("tmi.js");
+const crypto = require("crypto");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
+
+// Secret de l'extension Twitch (console développeur Twitch → ton extension →
+// onglet "Secret", format base64). Sert à vérifier que le token envoyé par
+// le client vient bien de Twitch et n'a pas été fabriqué par un viewer —
+// remplace l'ancienne clé admin partagée, qui était visible en clair dans le
+// JS envoyé à tout le monde (n'importe qui pouvait la copier et se faire
+// passer pour le streamer directement auprès du serveur).
+const TWITCH_EXT_SECRET = process.env.TWITCH_EXT_SECRET;
+
+function base64UrlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  return Buffer.from(str, "base64");
+}
+
+// Vérifie la signature (HMAC-SHA256) et l'expiration d'un token JWT signé
+// par Twitch pour cette extension, et renvoie son payload décodé si valide,
+// sinon null. Pas de librairie externe nécessaire : le format des tokens
+// d'extension Twitch est un HS256 classique, une simple vérification HMAC
+// suffit et évite une dépendance npm supplémentaire à faire déployer.
+function verifyTwitchExtensionToken(token) {
+  if (!token || typeof token !== "string" || !TWITCH_EXT_SECRET) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, signatureB64] = parts;
+  try {
+    const secretKey = Buffer.from(TWITCH_EXT_SECRET, "base64");
+    const expectedSig = crypto.createHmac("sha256", secretKey).update(headerB64 + "." + payloadB64).digest();
+    const actualSig = base64UrlDecode(signatureB64);
+    if (actualSig.length !== expectedSig.length || !crypto.timingSafeEqual(actualSig, expectedSig)) {
+      return null; // signature invalide : token forgé ou modifié
+    }
+    const payload = JSON.parse(base64UrlDecode(payloadB64).toString("utf8"));
+    if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) return null; // expiré
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ---------- Stockage persistant (Upstash Redis) ----------
 // Sert uniquement à ce qui ne doit JAMAIS être perdu (cadres/badges/titres
@@ -382,9 +421,16 @@ function refreshTiersAndWinner() {
   }
 }
 
+// Vérifie que la requête vient bien du streamer ou d'un modérateur, via le
+// token Twitch signé envoyé en en-tête "Authorization: Bearer <token>" —
+// et non plus via une clé partagée envoyée dans le corps de la requête.
 function checkAdmin(req, res) {
-  if (req.body?.adminKey !== ADMIN_KEY) {
-    res.status(401).json({ error: "clé admin invalide" });
+  const authHeader = req.headers["authorization"] || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const payload = verifyTwitchExtensionToken(token);
+  const role = payload && payload.role;
+  if (role !== "broadcaster" && role !== "moderator") {
+    res.status(401).json({ error: "accès streamer ou modérateur requis" });
     return false;
   }
   return true;
