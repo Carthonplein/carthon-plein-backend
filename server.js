@@ -915,6 +915,215 @@ app.get("/identify/:userId", async (req, res) => {
   }
 });
 
+// ---------- OAuth broadcaster (nécessaire pour vérifier les abonnements) ----------
+// Un token "app access token" (client_credentials, utilisé ci-dessus pour
+// /identify) ne suffit PAS pour lire les abonnements d'une chaîne : Twitch
+// exige un token appartenant au broadcaster lui-même, avec le scope
+// "channel:read:subscriptions", obtenu une seule fois via une autorisation
+// OAuth classique (voir /auth/twitch/start, à visiter une fois par le
+// streamer). Le refresh_token est ensuite utilisé indéfiniment pour
+// renouveler l'access_token automatiquement, sans jamais redemander.
+const TWITCH_REDIRECT_URI = process.env.TWITCH_REDIRECT_URI || "https://carthon-plein-backend.onrender.com/auth/twitch/callback";
+
+let broadcasterTokens = null; // { access_token, refresh_token, expires_at }
+let broadcasterUserId = null; // résolu une fois via CHANNEL_NAME, mis en cache
+
+app.get("/auth/twitch/start", (req, res) => {
+  const url = "https://id.twitch.tv/oauth2/authorize?" + new URLSearchParams({
+    client_id: TWITCH_CLIENT_ID,
+    redirect_uri: TWITCH_REDIRECT_URI,
+    response_type: "code",
+    scope: "channel:read:subscriptions",
+  });
+  res.redirect(url);
+});
+
+app.get("/auth/twitch/callback", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send("Code d'autorisation manquant.");
+  try {
+    const r = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: TWITCH_REDIRECT_URI,
+      }),
+    });
+    const data = await r.json();
+    if (!data.access_token) {
+      return res.status(500).send("Échec de l'autorisation Twitch : " + JSON.stringify(data));
+    }
+    broadcasterTokens = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + (data.expires_in || 0) * 1000,
+    };
+    await redisSetJSON("broadcasterTokens", broadcasterTokens);
+    res.send("✅ Autorisation réussie ! Carthon Plein peut maintenant vérifier les abonnements automatiquement. Tu peux fermer cette page.");
+  } catch (e) {
+    res.status(500).send("Erreur : " + e.message);
+  }
+});
+
+async function getBroadcasterAccessToken() {
+  if (!broadcasterTokens) broadcasterTokens = await redisGetJSON("broadcasterTokens", null);
+  if (!broadcasterTokens) return null; // pas encore autorisé (voir /auth/twitch/start)
+  if (Date.now() < broadcasterTokens.expires_at - 60000) return broadcasterTokens.access_token;
+  try {
+    const r = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        grant_type: "refresh_token",
+        refresh_token: broadcasterTokens.refresh_token,
+      }),
+    });
+    const data = await r.json();
+    if (!data.access_token) return null;
+    broadcasterTokens = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || broadcasterTokens.refresh_token,
+      expires_at: Date.now() + (data.expires_in || 0) * 1000,
+    };
+    await redisSetJSON("broadcasterTokens", broadcasterTokens);
+    return broadcasterTokens.access_token;
+  } catch (e) {
+    console.error("Erreur rafraîchissement token broadcaster :", e.message);
+    return null;
+  }
+}
+
+async function getBroadcasterUserId() {
+  if (broadcasterUserId) return broadcasterUserId;
+  try {
+    const token = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?login=" + encodeURIComponent(CHANNEL_NAME || ""), {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token },
+    });
+    const data = await r.json();
+    const user = data.data && data.data[0];
+    if (user) broadcasterUserId = user.id;
+    return broadcasterUserId;
+  } catch (e) {
+    console.error("Erreur résolution ID broadcaster :", e.message);
+    return null;
+  }
+}
+
+// Vérifie si userId est abonné à la chaîne. Ne renvoie JAMAIS d'erreur qui
+// bloquerait l'inscription : en cas de problème (token pas encore autorisé,
+// API indisponible...), on renvoie simplement false — un abonné mal détecté
+// perd son carton bonus pour cette inscription, mais peut toujours participer,
+// et ce n'est jamais bloquant pour lui.
+async function checkIsSubscriber(userId) {
+  try {
+    const token = await getBroadcasterAccessToken();
+    const bId = await getBroadcasterUserId();
+    if (!token || !bId) return false;
+    const r = await fetch(
+      "https://api.twitch.tv/helix/subscriptions?broadcaster_id=" + bId + "&user_id=" + userId,
+      { headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token } }
+    );
+    if (!r.ok) return false;
+    const data = await r.json();
+    return !!(data.data && data.data.length > 0);
+  } catch (e) {
+    console.error("Erreur vérification abonnement :", e.message);
+    return false;
+  }
+}
+
+// ---------- Inscription par bouton (liaison d'identité Twitch) ----------
+// Remplace le besoin de taper "!carthon" dans le chat : le viewer clique sur
+// un bouton dans l'overlay, autorise (une fois) le partage de son identité,
+// et cet endpoint fait tout le reste automatiquement à partir de son vrai
+// identifiant Twitch (jamais un pseudo fourni par le client, toujours vérifié
+// via le token signé par Twitch — donc impossible à falsifier).
+app.post("/register-by-identity", async (req, res) => {
+  const authHeader = req.headers["authorization"] || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const payload = verifyTwitchExtensionToken(token);
+  if (!payload) return res.status(401).json({ error: "token invalide" });
+  const userId = payload.user_id;
+  if (!userId) return res.status(400).json({ error: "identité non partagée" });
+
+  try {
+    const appToken = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?id=" + userId, {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + appToken },
+    });
+    const data = await r.json();
+    const user = data.data && data.data[0];
+    if (!user) return res.status(500).json({ error: "pseudo introuvable" });
+    const pseudo = user.display_name;
+
+    reconcilePseudoRename(userId, pseudo);
+    const isSub = await checkIsSubscriber(userId);
+    const result = registerPlayerInternal(pseudo, isSub);
+    if (!result.ok) return res.status(403).json({ error: "inscriptions fermées pour cette partie" });
+
+    const grid = generateCard(pseudo + "#" + state.gameId);
+    const bonusGrid = isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
+    res.json({ ok: true, pseudo, isSub, grid, bonusGrid });
+  } catch (e) {
+    res.status(500).json({ error: "erreur serveur" });
+  }
+});
+
+// ---------- Boule ("numéro proche") par double-clic (remplace "!23") ----------
+// Même logique d'éligibilité que l'ancienne commande de chat (numéro sur le
+// carton, pas encore tiré, et il reste 3 numéros ou moins sur l'ensemble du
+// carton) — sauf que l'identité vient du token signé, jamais du client.
+app.post("/drop-ball", (req, res) => {
+  const authHeader = req.headers["authorization"] || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const payload = verifyTwitchExtensionToken(token);
+  if (!payload) return res.status(401).json({ error: "token invalide" });
+  const userId = payload.user_id;
+  if (!userId) return res.status(400).json({ error: "identité non partagée" });
+
+  const pseudo = pseudoByUserId[userId];
+  if (!pseudo) return res.status(403).json({ error: "non inscrit" });
+  const player = state.players.find((p) => p.pseudo === pseudo);
+  if (!player) return res.status(403).json({ error: "non inscrit" });
+
+  const n = parseInt(req.body && req.body.number, 10);
+  if (!n || n < 1 || n > TOTAL_NUMBERS) return res.status(400).json({ error: "numéro invalide" });
+
+  const drawnSet = new Set(state.drawn);
+  const cardsToCheck = [generateCard(pseudo + "#" + state.gameId)];
+  if (player.isSub) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
+
+  let eligible = false;
+  for (const grid of cardsToCheck) {
+    const numberOnCard = grid.some((row) => row.includes(n));
+    const notYetDrawn = !drawnSet.has(n);
+    const totalRemaining = grid.flat().filter((v) => !drawnSet.has(v)).length;
+    const closeEnough = totalRemaining <= 3;
+    if (numberOnCard && notYetDrawn && closeEnough) {
+      eligible = true;
+      break;
+    }
+  }
+
+  if (eligible) {
+    state.ballDrops.push({
+      id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      pseudo,
+      number: n,
+      ts: Date.now(),
+      ...getPublicStatus(pseudo),
+    });
+  }
+  res.json({ ok: true, eligible });
+});
+
 app.post("/draw", (req, res) => {
   if (!checkAdmin(req, res)) return;
   if (gamePhase() === "finished") return res.status(403).json({ error: "partie terminée" });
@@ -1003,48 +1212,10 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
       }
       return;
     }
-
-    // "!23" — fait tomber une boule à l'écran si le numéro fait bien
-    // partie du carton du joueur, n'est pas déjà tiré, et qu'il lui reste
-    // 3 numéros ou moins pour compléter une colonne (évite le spam gratuit).
-    const numeroMatch = text.match(/^!(\d{1,2})$/);
-    if (numeroMatch) {
-      const n = parseInt(numeroMatch[1], 10);
-      const pseudo = tags["display-name"] || tags.username;
-      if (n < 1 || n > TOTAL_NUMBERS) return;
-
-      const player = state.players.find((p) => p.pseudo === pseudo);
-      if (!player) return;
-
-      const drawnSet = new Set(state.drawn);
-      const cardsToCheck = [generateCard(pseudo + "#" + state.gameId)];
-      if (player.isSub) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
-
-      let eligible = false;
-      for (const grid of cardsToCheck) {
-        const numberOnCard = grid.some((row) => row.includes(n));
-        const notYetDrawn = !drawnSet.has(n);
-        const totalRemaining = grid.flat().filter((v) => !drawnSet.has(v)).length;
-        const closeEnough = totalRemaining <= 3;
-        if (numberOnCard && notYetDrawn && closeEnough) {
-          eligible = true;
-          break;
-        }
-      }
-
-      if (eligible) {
-        state.ballDrops.push({
-          id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-          pseudo,
-          number: n,
-          ts: Date.now(),
-          ...getPublicStatus(pseudo),
-        });
-        // pas de message de confirmation dans le chat : l'effet à l'écran suffit,
-        // évite d'encombrer le chat si plusieurs joueurs l'utilisent d'affilée
-      }
-      return;
-    }
+    // La commande "!23" (boule à l'écran) a été retirée : remplacée par un
+    // double-clic directement sur le numéro manquant dans "Mon carton"
+    // (voir POST /drop-ball) — plus rapide que taper une commande, surtout
+    // en fin de partie quand plusieurs numéros approchent en même temps.
   });
 } else {
   console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
