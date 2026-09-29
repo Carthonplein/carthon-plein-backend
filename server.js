@@ -194,6 +194,23 @@ function grantFrame(pseudo, frameKey) {
   }
 }
 
+// Retire un cadre déjà débloqué (ex: erreur du streamer en distribuant le
+// mauvais cadre). Si le viewer l'avait équipé, on le repasse sur "Aucun
+// cadre" pour ne pas laisser un badge/cadre fantôme affiché.
+function revokeFrame(pseudo, frameKey) {
+  if (unlockedFramesByPseudo[pseudo]) {
+    const idx = unlockedFramesByPseudo[pseudo].indexOf(frameKey);
+    if (idx !== -1) {
+      unlockedFramesByPseudo[pseudo].splice(idx, 1);
+      redisSetJSON("unlockedFramesByPseudo", unlockedFramesByPseudo);
+    }
+  }
+  if (displayChoiceByPseudo[pseudo] && displayChoiceByPseudo[pseudo].frame === frameKey) {
+    displayChoiceByPseudo[pseudo].frame = "none";
+    redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
+  }
+}
+
 // Cadres qu'on peut acheter (par don) — à étendre au fil de futurs cadres.
 // Le cadre "super" n'y figure pas exprès : il se mérite, il ne s'achète pas.
 // Ordre = priorité par défaut du badge (le premier possédé dans cet ordre
@@ -866,6 +883,16 @@ app.post("/grant-frame", (req, res) => {
   }
   grantFrame(pseudo, frameKey);
   res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
+});
+
+app.post("/revoke-frame", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { pseudo, frameKey } = req.body || {};
+  if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
+    return res.status(400).json({ error: "pseudo et frameKey requis" });
+  }
+  revokeFrame(pseudo, frameKey);
+  res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] || [] });
 });
 
 // ---------- Résolution d'identité (identifiant Twitch réel -> pseudo) ----------
