@@ -179,7 +179,16 @@ let state = {
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
+  duckEvent: null, // { id, ts } — easter egg "canard volant", déclenché manuellement par le streamer
+  panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
 };
+
+// Anti-spam pour "!pan" : un seul déclenchement autorisé toutes les
+// PAN_COOLDOWN_MS, tous chatteurs confondus, pour éviter qu'un raid de
+// "!pan" ne recouvre l'écran d'explosions. Volontairement en dehors de
+// `state` (pas remis à zéro par "Nouvelle partie").
+let lastPanTriggerTs = 0;
+const PAN_COOLDOWN_MS = 1500;
 
 // Cadres débloqués par pseudo (dons, etc.) — volontairement EN DEHORS de
 // `state` pour ne jamais être effacés par "Nouvelle partie" : { pseudo: ["nature", ...] }
@@ -793,6 +802,7 @@ app.get("/state", (req, res) => {
   // ne garde que les chutes de boules récentes (10 dernières secondes)
   const now = Date.now();
   state.ballDrops = state.ballDrops.filter((b) => now - b.ts < 10000);
+  state.panDrops = state.panDrops.filter((p) => now - p.ts < 10000);
   res.json({
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub })),
@@ -806,6 +816,8 @@ app.get("/state", (req, res) => {
     ballDrops: state.ballDrops,
     gameId: state.gameId,
     overlayVisible,
+    duckEvent: state.duckEvent,
+    panDrops: state.panDrops,
   });
 });
 
@@ -1166,8 +1178,23 @@ app.post("/draw", (req, res) => {
 
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [] };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [] };
   res.json({ ok: true });
+});
+
+// Easter egg déclenché manuellement par le streamer/un modérateur (bouton
+// "🦆 Faire voler le canard" dans les contrôles streamer) : fait traverser
+// l'écran à un canard, pour tous les viewers, sans lien avec le tirage des
+// numéros. Comme pour /start-wheel-spin, on se contente de poser un
+// événement avec un id unique — c'est overlay.js (detectDuckEvent) qui
+// détecte le changement d'id au sondage suivant et joue l'animation.
+app.post("/trigger-duck", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  state.duckEvent = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    ts: Date.now(),
+  };
+  res.json({ ok: true, duckEvent: state.duckEvent });
 });
 
 app.post("/start-wheel-spin", (req, res) => {
@@ -1237,6 +1264,20 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
       } else {
         client.say(channel, "@" + pseudo + " les inscriptions sont fermées pour cette partie, à la prochaine !");
       }
+      return;
+    }
+    if (text === "!pan") {
+      // Easter egg ouvert à tout le chat (pas besoin d'être inscrit) : fait
+      // apparaître une explosion à un endroit/taille aléatoires sur
+      // l'overlay. Un cooldown global évite qu'un enchaînement de "!pan"
+      // par plusieurs viewers ne sature l'écran.
+      const now = Date.now();
+      if (now - lastPanTriggerTs < PAN_COOLDOWN_MS) return;
+      lastPanTriggerTs = now;
+      state.panDrops.push({
+        id: now + "-" + Math.random().toString(36).slice(2, 8),
+        ts: now,
+      });
       return;
     }
     // La commande "!23" (boule à l'écran) a été retirée : remplacée par un
