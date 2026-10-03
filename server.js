@@ -284,6 +284,13 @@ function reconcilePseudoRename(userId, newPseudo) {
 // et persisté sur Redis pour survivre aussi à un redémarrage du serveur.
 let overlayVisible = true;
 
+// Dernier gagnant d'un Carthon Plein, mémorisé quand le streamer lance une
+// "Nouvelle partie" (sinon son nom disparaîtrait avec le reste de `state`).
+// Volontairement hors de `state` et persisté sur Redis, comme les cadres.
+// { pseudo, cardType, isSuper, drawCount, ts } — le badge/titre affiché est
+// recalculé à chaque lecture (voir /state) pour rester à jour.
+let lastWinner = null;
+
 function recordWin(pseudo, isSuper) {
   if (!winsByPseudo[pseudo]) winsByPseudo[pseudo] = { total: 0, super: 0 };
   winsByPseudo[pseudo].total += 1;
@@ -818,6 +825,7 @@ app.get("/state", (req, res) => {
     overlayVisible,
     duckEvent: state.duckEvent,
     panDrops: state.panDrops,
+    lastWinner: lastWinner ? { ...lastWinner, ...getPublicStatus(lastWinner.pseudo) } : null,
   });
 });
 
@@ -1213,6 +1221,18 @@ app.post("/draw", (req, res) => {
 
 app.post("/reset", (req, res) => {
   if (!checkAdmin(req, res)) return;
+  // La partie qui se termine avait un gagnant : on le retient avant d'effacer l'état.
+  // (Pas de gagnant, par exemple partie abandonnée : on garde le précédent.)
+  if (state.winner && state.winner.pseudo) {
+    lastWinner = {
+      pseudo: state.winner.pseudo,
+      cardType: state.winner.cardType || "principal",
+      isSuper: !!state.winner.isSuper,
+      drawCount: state.drawn.length,
+      ts: Date.now(),
+    };
+    redisSetJSON("lastWinner", lastWinner);
+  }
   state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [] };
   res.json({ ok: true });
 });
@@ -1330,6 +1350,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   winsByPseudo = await redisGetJSON("winsByPseudo", {});
   pseudoByUserId = await redisGetJSON("pseudoByUserId", {});
   overlayVisible = await redisGetJSON("overlayVisible", true);
+  lastWinner = await redisGetJSON("lastWinner", null);
   console.log(
     REDIS_ENABLED
       ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
