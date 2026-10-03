@@ -1115,6 +1115,20 @@ app.post("/register-by-identity", async (req, res) => {
   }
 });
 
+// ---------- Anti-spam des boules ----------
+// Règles appliquées côté serveur (donc impossibles à contourner depuis le
+// navigateur) :
+//  - un joueur ne peut lâcher qu'UNE boule toutes les BALL_COOLDOWN_MS ;
+//  - un même numéro ne peut être lâché qu'UNE fois par joueur et par partie ;
+//  - au plus MAX_BALLS_ON_SCREEN boules à l'écran en même temps (garde-fou
+//    contre un afflux de comptes qui cliqueraient tous en même temps).
+// Le suivi est lié à l'identifiant de la partie : "Nouvelle partie" remet
+// tout à zéro automatiquement.
+const BALL_COOLDOWN_MS = 8000;
+const MAX_BALLS_ON_SCREEN = 15;
+const BALL_VISIBLE_MS = 10000; // même durée que la purge dans /state
+let ballLog = { gameId: null, byPseudo: {} }; // byPseudo[pseudo] = { last, numbers: [] }
+
 // ---------- Boule ("numéro proche") par double-clic (remplace "!23") ----------
 // Même logique d'éligibilité que l'ancienne commande de chat (numéro sur le
 // carton, pas encore tiré, et il reste 3 numéros ou moins sur l'ensemble du
@@ -1152,11 +1166,32 @@ app.post("/drop-ball", (req, res) => {
   }
 
   if (eligible) {
+    const now = Date.now();
+    if (ballLog.gameId !== state.gameId) ballLog = { gameId: state.gameId, byPseudo: {} };
+    const mine = ballLog.byPseudo[pseudo] || (ballLog.byPseudo[pseudo] = { last: 0, numbers: [] });
+
+    // 1) même numéro déjà lâché pendant cette partie
+    if (mine.numbers.includes(n)) {
+      return res.json({ ok: true, eligible: false, rejected: "already" });
+    }
+    // 2) trop tôt après ta dernière boule
+    const wait = mine.last + BALL_COOLDOWN_MS - now;
+    if (wait > 0) {
+      return res.json({ ok: true, eligible: false, rejected: "cooldown", retryAfterMs: wait });
+    }
+    // 3) trop de boules déjà à l'écran
+    const onScreen = state.ballDrops.filter((b) => now - b.ts < BALL_VISIBLE_MS).length;
+    if (onScreen >= MAX_BALLS_ON_SCREEN) {
+      return res.json({ ok: true, eligible: false, rejected: "busy", retryAfterMs: 3000 });
+    }
+
+    mine.last = now;
+    mine.numbers.push(n);
     state.ballDrops.push({
-      id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      id: now + "-" + Math.random().toString(36).slice(2, 8),
       pseudo,
       number: n,
-      ts: Date.now(),
+      ts: now,
       ...getPublicStatus(pseudo),
     });
   }
