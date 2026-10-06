@@ -287,7 +287,7 @@ let overlayVisible = true;
 // Dernier gagnant d'un Carthon Plein, mémorisé quand le streamer lance une
 // "Nouvelle partie" (sinon son nom disparaîtrait avec le reste de `state`).
 // Volontairement hors de `state` et persisté sur Redis, comme les cadres.
-// { pseudo, cardType, isSuper, drawCount, ts } — le badge/titre affiché est
+// { pseudo, cardType, isSuper, drawCount, playerCount, ts } — le badge/titre affiché est
 // recalculé à chaque lecture (voir /state) pour rester à jour.
 let lastWinner = null;
 
@@ -1229,6 +1229,7 @@ app.post("/reset", (req, res) => {
       cardType: state.winner.cardType || "principal",
       isSuper: !!state.winner.isSuper,
       drawCount: state.drawn.length,
+      playerCount: state.players.length, // nombre d'inscrits de la partie qui se termine
       ts: Date.now(),
     };
     redisSetJSON("lastWinner", lastWinner);
