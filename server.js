@@ -224,7 +224,7 @@ function revokeFrame(pseudo, frameKey) {
 // Le cadre "super" n'y figure pas exprès : il se mérite, il ne s'achète pas.
 // Ordre = priorité par défaut du badge (le premier possédé dans cet ordre
 // gagne, tant que le viewer n'a rien choisi lui-même).
-const PURCHASABLE_FRAMES = ["signature", "rock", "poop", "noel", "valentine", "easter", "pirate", "space", "formula1", "halloween", "nature"];
+const PURCHASABLE_FRAMES = ["signature", "rock", "poop", "sea", "noel", "valentine", "easter", "pirate", "space", "formula1", "halloween", "nature"];
 
 // Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
 // ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
