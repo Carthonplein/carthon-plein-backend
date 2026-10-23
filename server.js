@@ -249,6 +249,29 @@ let displayChoiceByPseudo = {};
 // persisté sur Redis comme le reste, pour les titres basés sur les gains.
 let winsByPseudo = {};
 
+// Parties jouées par pseudo — { pseudo: { games: N, pioneer: true|false } } —
+// pour les titres Fidèle / Pilier de la chaîne / Pionnier. Une partie compte
+// quand elle se termine par "Nouvelle partie" ET qu'au moins un numéro a été
+// tiré ; tous les inscrits de cette partie la comptent.
+// Pionnier : avoir joué une partie qui se termine pendant la soirée de lancement
+// (1er novembre 2026, heure de Paris). Dates modifiables ici.
+const PIONEER_FROM = Date.parse("2026-10-31T23:00:00Z");  // 1er nov. 00h00 Paris
+const PIONEER_UNTIL = Date.parse("2026-11-01T23:00:00Z"); // 2 nov. 00h00 Paris
+let gamesByPseudo = {};
+
+function recordGameParticipation() {
+  if (!state.drawn || state.drawn.length === 0) return;
+  const now = Date.now();
+  const isLaunchNight = now >= PIONEER_FROM && now < PIONEER_UNTIL;
+  state.players.forEach((p) => {
+    const g = gamesByPseudo[p.pseudo] || { games: 0, pioneer: false };
+    g.games += 1;
+    if (isLaunchNight) g.pioneer = true;
+    gamesByPseudo[p.pseudo] = g;
+  });
+  redisSetJSON("gamesByPseudo", gamesByPseudo);
+}
+
 // Dernier pseudo connu pour chaque identifiant Twitch STABLE (tags["user-id"]
 // des messages de chat) — { twitchUserId: "pseudo" }. Contrairement au
 // pseudo, cet ID ne change jamais, même si le viewer renomme son compte
@@ -280,6 +303,13 @@ function reconcilePseudoRename(userId, newPseudo) {
       winsByPseudo[newPseudo] = { total: prevNew.total + prevOld.total, super: prevNew.super + prevOld.super };
       delete winsByPseudo[oldPseudo];
       redisSetJSON("winsByPseudo", winsByPseudo);
+    }
+    if (gamesByPseudo[oldPseudo]) {
+      const pn = gamesByPseudo[newPseudo] || { games: 0, pioneer: false };
+      const po = gamesByPseudo[oldPseudo];
+      gamesByPseudo[newPseudo] = { games: pn.games + po.games, pioneer: pn.pioneer || po.pioneer };
+      delete gamesByPseudo[oldPseudo];
+      redisSetJSON("gamesByPseudo", gamesByPseudo);
     }
     if (displayChoiceByPseudo[oldPseudo] && !displayChoiceByPseudo[newPseudo]) {
       displayChoiceByPseudo[newPseudo] = displayChoiceByPseudo[oldPseudo];
@@ -320,7 +350,8 @@ function getAvailableStatuses(pseudo) {
   const isBroadcaster = CHANNEL_NAME && pseudo && pseudo.toLowerCase() === CHANNEL_NAME.toLowerCase();
   const frames = isBroadcaster ? [...PURCHASABLE_FRAMES, SUPER_FRAME_KEY] : (unlockedFramesByPseudo[pseudo] || []);
   const hasSuper = isBroadcaster || frames.includes(SUPER_FRAME_KEY);
-  const wins = isBroadcaster ? { total: 3, super: 2 } : (winsByPseudo[pseudo] || { total: 0, super: 0 });
+  const wins = isBroadcaster ? { total: 10, super: 2 } : (winsByPseudo[pseudo] || { total: 0, super: 0 });
+  const played = isBroadcaster ? { games: 50, pioneer: true } : (gamesByPseudo[pseudo] || { games: 0, pioneer: false });
 
   const availableBadges = [];
   if (hasSuper) availableBadges.push("super");
@@ -336,10 +367,15 @@ function getAvailableStatuses(pseudo) {
   const availableTitles = [];
   if (wins.super >= 2) availableTitles.push("mythique");
   if (hasSuper) availableTitles.push("legend");
+  if (wins.total >= 10) availableTitles.push("veteran");
   if (wins.total >= 3) availableTitles.push("multi_champion");
   const requiredForGrand = PURCHASABLE_FRAMES.filter((f) => !SEASONAL_FRAMES_LOCKED.includes(f));
   if (requiredForGrand.length > 0 && requiredForGrand.every((f) => ownedPurchasable.includes(f))) availableTitles.push("grand_collector");
+  if (played.games >= 50) availableTitles.push("pilier");
+  if (ownedPurchasable.length >= 5) availableTitles.push("fashion_victim");
   if (wins.total >= 1) availableTitles.push("chanceux");
+  if (played.games >= 10) availableTitles.push("fidele");
+  if (played.pioneer) availableTitles.push("pionnier");
   if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
 
   return { availableBadges, availableTitles };
@@ -1256,6 +1292,7 @@ app.post("/reset", (req, res) => {
     };
     redisSetJSON("lastWinner", lastWinner);
   }
+  recordGameParticipation();
   state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [] };
   res.json({ ok: true });
 });
@@ -1371,6 +1408,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
   displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
   winsByPseudo = await redisGetJSON("winsByPseudo", {});
+  gamesByPseudo = await redisGetJSON("gamesByPseudo", {});
   pseudoByUserId = await redisGetJSON("pseudoByUserId", {});
   overlayVisible = await redisGetJSON("overlayVisible", true);
   lastWinner = await redisGetJSON("lastWinner", null);
