@@ -28,6 +28,14 @@ function base64UrlDecode(str) {
 // sinon null. Pas de librairie externe nécessaire : le format des tokens
 // d'extension Twitch est un HS256 classique, une simple vérification HMAC
 // suffit et évite une dépendance npm supplémentaire à faire déployer.
+// Garde-fou de chaîne : l'extension étant publique, n'importe quel streamer peut l'installer
+// et Twitch lui signe alors un token valide (role "broadcaster" pour SA chaîne). On n'accepte
+// donc que les tokens émis pour NOTRE chaîne (champ channel_id du token). L'identifiant est
+// soit ALLOWED_CHANNEL_ID (variable Render, optionnelle), soit résolu automatiquement depuis
+// CHANNEL_NAME au démarrage. Sans aucun des deux, la vérification est désactivée.
+let allowedChannelId = process.env.ALLOWED_CHANNEL_ID || null;
+const CHANNEL_GUARD_ON = !!(process.env.ALLOWED_CHANNEL_ID || process.env.CHANNEL_NAME);
+
 function verifyTwitchExtensionToken(token) {
   if (!token || typeof token !== "string" || !TWITCH_EXT_SECRET) return null;
   const parts = token.split(".");
@@ -42,6 +50,8 @@ function verifyTwitchExtensionToken(token) {
     }
     const payload = JSON.parse(base64UrlDecode(payloadB64).toString("utf8"));
     if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) return null; // expiré
+    // Token d'une autre chaîne (ou ID de notre chaîne pas encore résolu) : refusé
+    if (CHANNEL_GUARD_ON && (!allowedChannelId || String(payload.channel_id) !== String(allowedChannelId))) return null;
     return payload;
   } catch (e) {
     return null;
@@ -829,18 +839,12 @@ app.get("/state", (req, res) => {
   });
 });
 
+// Ancienne inscription manuelle (pseudo + isSub libres, sans aucune vérification) : plus
+// utilisée par l'extension (inscription par identité Twitch via /register-by-identity, ou
+// par le chat avec !carthon). Désactivée car n'importe qui pouvait s'inscrire sous un faux
+// pseudo ou se déclarer abonné pour obtenir un carton bonus.
 app.post("/register", (req, res) => {
-  const { pseudo, isSub } = req.body || {};
-  if (!pseudo || typeof pseudo !== "string") {
-    return res.status(400).json({ error: "pseudo manquant" });
-  }
-  const result = registerPlayerInternal(pseudo, isSub);
-  if (!result.ok) {
-    return res.status(403).json({ error: "inscriptions fermées pour cette partie" });
-  }
-  const grid = generateCard(pseudo + "#" + state.gameId);
-  const bonusGrid = isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-  res.json({ grid, bonusGrid });
+  res.status(410).json({ error: "route désactivée" });
 });
 
 app.get("/card/:pseudo", (req, res) => {
@@ -1060,6 +1064,21 @@ async function getBroadcasterUserId() {
   } catch (e) {
     console.error("Erreur résolution ID broadcaster :", e.message);
     return null;
+  }
+}
+
+// Résout l'ID numérique de notre chaîne (CHANNEL_NAME) pour le garde-fou de chaîne.
+// Réessaie toutes les 15 s tant que Twitch ne répond pas : pendant ce temps, les actions
+// protégées par token sont refusées (par sécurité) mais le jeu public reste consultable.
+async function resolveAllowedChannel() {
+  if (allowedChannelId || !CHANNEL_GUARD_ON) return;
+  const id = await getBroadcasterUserId();
+  if (id) {
+    allowedChannelId = String(id);
+    console.log("Garde-fou de chaîne actif : seuls les tokens de la chaîne " + allowedChannelId + " sont acceptés.");
+  } else {
+    console.error("Garde-fou de chaîne : ID de la chaîne introuvable (CHANNEL_NAME correct ? Client Secret configuré ?) — nouvel essai dans 15 s.");
+    setTimeout(resolveAllowedChannel, 15000);
   }
 }
 
@@ -1362,6 +1381,9 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
       ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
       : "⚠️ Redis non configuré (UPSTASH_REDIS_REST_URL/TOKEN manquants) — les cadres/badges/titres ne survivront PAS à un redémarrage."
   );
+
+  // Résout l'ID de NOTRE chaîne avant d'accepter des requêtes (garde-fou de chaîne)
+  await resolveAllowedChannel();
 
   app.listen(PORT, () => {
     console.log("Serveur démarré sur le port " + PORT);
