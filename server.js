@@ -236,6 +236,11 @@ function revokeFrame(pseudo, frameKey) {
 // gagne, tant que le viewer n'a rien choisi lui-même).
 const PURCHASABLE_FRAMES = ["signature", "rock", "poop", "sea", "disco", "dino", "noel", "valentine", "easter", "pirate", "space", "formula1", "halloween", "nature"];
 
+// Cadres saisonniers PAS ENCORE distribuables : ils ne comptent pas pour le titre
+// "Grand Collectionneur". Quand la saison arrive (ex. Noël en décembre), retire simplement
+// le nom de cette liste : le cadre devient alors obligatoire pour ce titre.
+const SEASONAL_FRAMES_LOCKED = ["noel", "valentine", "easter"];
+
 // Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
 // ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
 let displayChoiceByPseudo = {};
@@ -332,7 +337,8 @@ function getAvailableStatuses(pseudo) {
   if (wins.super >= 2) availableTitles.push("mythique");
   if (hasSuper) availableTitles.push("legend");
   if (wins.total >= 3) availableTitles.push("multi_champion");
-  if (PURCHASABLE_FRAMES.length > 0 && ownedPurchasable.length === PURCHASABLE_FRAMES.length) availableTitles.push("grand_collector");
+  const requiredForGrand = PURCHASABLE_FRAMES.filter((f) => !SEASONAL_FRAMES_LOCKED.includes(f));
+  if (requiredForGrand.length > 0 && requiredForGrand.every((f) => ownedPurchasable.includes(f))) availableTitles.push("grand_collector");
   if (wins.total >= 1) availableTitles.push("chanceux");
   if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
 
