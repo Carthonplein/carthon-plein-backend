@@ -875,6 +875,7 @@ app.get("/state", (req, res) => {
     ballDrops: state.ballDrops,
     gameId: state.gameId,
     overlayVisible,
+    lockedFrames: SEASONAL_FRAMES_LOCKED,
     duckEvent: state.duckEvent,
     panDrops: state.panDrops,
     lastWinner: lastWinner ? { ...lastWinner, ...getPublicStatus(lastWinner.pseudo) } : null,
@@ -946,6 +947,9 @@ app.post("/grant-frame", (req, res) => {
   }
   if (EXCLUSIVE_FRAMES.includes(frameKey)) {
     return res.status(400).json({ error: "ce cadre ne peut pas être distribué manuellement, il ne s'obtient qu'en le gagnant" });
+  }
+  if (SEASONAL_FRAMES_LOCKED.includes(frameKey)) {
+    return res.status(400).json({ error: "ce cadre saisonnier n'est pas encore distribuable (retire-le de SEASONAL_FRAMES_LOCKED dans server.js à l'ouverture de sa saison)" });
   }
   grantFrame(pseudo, frameKey);
   res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
