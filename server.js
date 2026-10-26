@@ -234,7 +234,7 @@ function revokeFrame(pseudo, frameKey) {
 // Le cadre "super" n'y figure pas exprès : il se mérite, il ne s'achète pas.
 // Ordre = priorité par défaut du badge (le premier possédé dans cet ordre
 // gagne, tant que le viewer n'a rien choisi lui-même).
-const PURCHASABLE_FRAMES = ["signature", "rock", "poop", "sea", "disco", "dino", "western", "noel", "valentine", "easter", "pirate", "space", "formula1", "halloween", "nature"];
+const PURCHASABLE_FRAMES = ["signature", "rock", "poop", "sea", "disco", "dino", "western", "cosy", "noel", "valentine", "easter", "pirate", "space", "formula1", "halloween", "nature"];
 
 // Cadres saisonniers PAS ENCORE distribuables : ils ne comptent pas pour le titre
 // "Grand Collectionneur". Quand la saison arrive (ex. Noël en décembre), retire simplement
