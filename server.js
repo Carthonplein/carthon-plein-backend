@@ -259,6 +259,16 @@ const PIONEER_FROM = Date.parse("2026-10-31T23:00:00Z");  // 1er nov. 00h00 Pari
 const PIONEER_UNTIL = Date.parse("2026-11-01T23:00:00Z"); // 2 nov. 00h00 Paris
 let gamesByPseudo = {};
 
+// Les 5 nouveaux titres (Vétéran, Fashion Victim, Fidèle, Pilier de la chaîne, Pionnier)
+// ne sont connus que des versions récentes de l'extension (v117 et +). Tant que la
+// version en ligne sur Twitch est plus ancienne, ils s'afficheraient comme "undefined"
+// dans le sélecteur de titre : on les MASQUE donc, mais les compteurs (parties jouées,
+// Pionnier de la soirée de lancement) continuent de tourner en coulisses.
+// Pour les activer : variable d'environnement NEW_TITLES_VISIBLE = 1 sur Render
+// (une fois la nouvelle version de l'extension en ligne).
+const NEW_TITLES_VISIBLE = process.env.NEW_TITLES_VISIBLE === "1";
+const NEW_TITLE_KEYS = ["veteran", "fashion_victim", "fidele", "pilier", "pionnier"];
+
 function recordGameParticipation() {
   if (!state.drawn || state.drawn.length === 0) return;
   const now = Date.now();
@@ -378,7 +388,10 @@ function getAvailableStatuses(pseudo) {
   if (played.pioneer) availableTitles.push("pionnier");
   if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
 
-  return { availableBadges, availableTitles };
+  return {
+    availableBadges,
+    availableTitles: NEW_TITLES_VISIBLE ? availableTitles : availableTitles.filter((t) => !NEW_TITLE_KEYS.includes(t)),
+  };
 }
 
 // Calcule le badge + titre RÉELLEMENT affichés publiquement pour un pseudo
