@@ -4,8 +4,26 @@ const tmi = require("tmi.js");
 const crypto = require("crypto");
 
 const app = express();
+app.set("trust proxy", 1); // Render est derrière un proxy : sert à lire la vraie adresse IP du visiteur
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "20kb" }));
+
+// Limiteur de débit simple (en mémoire) : protège contre quelqu'un qui martèlerait le serveur
+// (par ex. pour épuiser le quota de l'API Twitch). Les plafonds sont larges pour ne jamais
+// gêner de vrais viewers, même plusieurs derrière la même box internet.
+const rateBuckets = new Map();
+function rateLimit(name, max, windowMs) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = name + "|" + (req.ip || "?");
+    let e = rateBuckets.get(key);
+    if (!e || now > e.reset) { e = { n: 0, reset: now + windowMs }; rateBuckets.set(key, e); }
+    e.n += 1;
+    if (e.n > max) return res.status(429).json({ error: "trop de requêtes, réessaie dans un instant" });
+    next();
+  };
+}
+setInterval(() => { const now = Date.now(); for (const [k, e] of rateBuckets) if (now > e.reset) rateBuckets.delete(k); }, 60000).unref();
 
 const PORT = process.env.PORT || 3000;
 
@@ -66,31 +84,81 @@ const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIS_ENABLED = !!(REDIS_URL && REDIS_TOKEN);
 
-async function redisGetJSON(key, fallback) {
+// Lecture avec nouvelles tentatives. Distingue "la clé n'existe pas" (normal au tout premier
+// démarrage : on renvoie la valeur par défaut) d'une ERREUR de lecture : dans ce second cas la
+// clé est marquée "illisible" et plus jamais écrasée (voir redisSetJSON), pour qu'une panne
+// passagère de Redis ne puisse jamais effacer les cadres/victoires des joueurs.
+const redisUnreadable = new Set();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETRY_BASE_MS = Number(process.env.REDIS_RETRY_MS || 1500);
+
+async function redisGetJSON(key, fallback, attempts) {
   if (!REDIS_ENABLED) return fallback;
-  try {
-    const res = await fetch(REDIS_URL + "/get/" + encodeURIComponent(key), {
-      headers: { Authorization: "Bearer " + REDIS_TOKEN },
-    });
-    const data = await res.json();
-    return data.result ? JSON.parse(data.result) : fallback;
-  } catch (e) {
-    console.error("Erreur lecture Redis (" + key + ") :", e.message);
-    return fallback;
+  const maxTries = attempts || 1;
+  for (let i = 1; i <= maxTries; i++) {
+    try {
+      const res = await fetch(REDIS_URL + "/get/" + encodeURIComponent(key), {
+        headers: { Authorization: "Bearer " + REDIS_TOKEN },
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (data && data.error) throw new Error(data.error);
+      redisUnreadable.delete(key);
+      return data && data.result ? JSON.parse(data.result) : fallback;
+    } catch (e) {
+      console.error("Erreur lecture Redis (" + key + ") essai " + i + "/" + maxTries + " :", e.message);
+      if (i < maxTries) await sleep(RETRY_BASE_MS * i);
+    }
   }
+  redisUnreadable.add(key);
+  return fallback;
 }
 
-async function redisSetJSON(key, value) {
-  if (!REDIS_ENABLED) return;
-  try {
-    await fetch(REDIS_URL + "/set/" + encodeURIComponent(key), {
-      method: "POST",
-      headers: { Authorization: "Bearer " + REDIS_TOKEN },
-      body: JSON.stringify(value),
-    });
-  } catch (e) {
-    console.error("Erreur écriture Redis (" + key + ") :", e.message);
+// Écritures : (1) rien n'est écrit avant la fin du chargement initial (sinon une écriture
+// précoce, par ex. un message de chat reçu pendant le démarrage, écraserait tout avec presque
+// rien), (2) jamais sur une clé qu'on n'a pas pu relire, (3) une seule écriture à la fois par
+// clé et toujours la plus récente (pas de désordre), (4) nouvelles tentatives si Redis répond
+// mal, avec un message dans les logs si ça échoue vraiment.
+let dataReady = false;
+const writeState = new Map(); // key -> { running, dirty, value }
+
+async function flushKey(key) {
+  const st = writeState.get(key);
+  st.running = true;
+  while (st.dirty) {
+    st.dirty = false;
+    let ok = false;
+    for (let i = 1; i <= 3 && !ok; i++) {
+      try {
+        const res = await fetch(REDIS_URL + "/set/" + encodeURIComponent(key), {
+          method: "POST",
+          headers: { Authorization: "Bearer " + REDIS_TOKEN },
+          body: JSON.stringify(st.value),
+        });
+        ok = res.ok;
+        if (!ok) console.error("Erreur écriture Redis (" + key + ") : HTTP " + res.status);
+      } catch (e) {
+        console.error("Erreur écriture Redis (" + key + ") :", e.message);
+      }
+      if (!ok && i < 3) await sleep(1000 * i);
+    }
+    if (!ok) console.error("⚠️ ÉCHEC d'écriture Redis pour " + key + " après 3 essais — la prochaine modification réessaiera.");
   }
+  st.running = false;
+}
+
+function redisSetJSON(key, value) {
+  if (!REDIS_ENABLED) return Promise.resolve();
+  if (!dataReady) return Promise.resolve();
+  if (redisUnreadable.has(key)) {
+    console.error("Écriture Redis ignorée pour " + key + " : la clé n'a pas pu être relue (protection contre l'écrasement).");
+    return Promise.resolve();
+  }
+  const st = writeState.get(key) || { running: false, dirty: false, value: null };
+  st.value = value;
+  st.dirty = true;
+  writeState.set(key, st);
+  return st.running ? Promise.resolve() : flushKey(key);
 }
 
 const GRID_SIZE = 4;
@@ -531,11 +599,19 @@ function checkAdmin(req, res) {
     res.status(401).json({ error: "accès streamer ou modérateur requis" });
     return false;
   }
-  return true;
+  return payload;
+}
+
+// Nettoyage défensif d'un pseudo : un vrai pseudo Twitch ne contient jamais ces caractères,
+// donc pour un joueur normal rien ne change ; ça empêche seulement d'injecter du HTML.
+function cleanPseudo(s) {
+  return String(s == null ? "" : s).replace(/[<>&"'`\\]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
 }
 
 // Inscription partagée entre le bouton du panel (HTTP) et la commande de chat
 function registerPlayerInternal(pseudo, isSub) {
+  pseudo = cleanPseudo(pseudo);
+  if (!pseudo) return { ok: false, reason: "invalid" };
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
   if (!state.players.some((p) => p.pseudo === pseudo)) {
     state.players.push({ pseudo, isSub: !!isSub });
@@ -869,7 +945,7 @@ app.get("/reglement", (req, res) => {
 </html>`);
 });
 
-app.get("/state", (req, res) => {
+app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   const drawnSet = new Set(state.drawn);
   // ne garde que les chutes de boules récentes (10 dernières secondes)
   const now = Date.now();
@@ -903,7 +979,7 @@ app.post("/register", (req, res) => {
   res.status(410).json({ error: "route désactivée" });
 });
 
-app.get("/card/:pseudo", (req, res) => {
+app.get("/card/:pseudo", rateLimit("card", 600, 60000), (req, res) => {
   const pseudo = req.params.pseudo;
   const player = state.players.find((p) => p.pseudo === pseudo);
   const unlockedFrames = unlockedFramesByPseudo[pseudo] || [];
@@ -919,10 +995,27 @@ app.get("/card/:pseudo", (req, res) => {
   res.json({ registered: true, grid, bonusGrid, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
 });
 
-app.post("/set-display-choice", (req, res) => {
-  const { pseudo, frame, title } = req.body || {};
-  if (!pseudo || typeof pseudo !== "string") {
+app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res) => {
+  const { pseudo: rawPseudo, frame, title } = req.body || {};
+  if (!rawPseudo || typeof rawPseudo !== "string") {
     return res.status(400).json({ error: "pseudo manquant" });
+  }
+  const pseudo = cleanPseudo(rawPseudo);
+  if (!pseudo) return res.status(400).json({ error: "pseudo manquant" });
+  // Vérification d'identité : si le client envoie son jeton Twitch signé, le pseudo doit être
+  // celui de CE compte (on ne peut plus changer le cadre/titre d'un autre joueur). Les anciennes
+  // versions de l'extension n'envoient pas de jeton : acceptées tant que STRICT_DISPLAY_AUTH
+  // n'est pas activé sur Render (à activer une fois la nouvelle version en ligne).
+  {
+    const authHeader = req.headers["authorization"] || "";
+    const tok = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const payload = tok ? verifyTwitchExtensionToken(tok) : null;
+    if (payload && payload.user_id && /^\d+$/.test(String(payload.user_id))) {
+      const owner = await pseudoFromUserId(String(payload.user_id));
+      if (owner && owner !== pseudo) return res.status(403).json({ error: "ce n'est pas ton pseudo" });
+    } else if (process.env.STRICT_DISPLAY_AUTH === "1") {
+      return res.status(401).json({ error: "identité Twitch requise" });
+    }
   }
   const { availableBadges, availableTitles } = getAvailableStatuses(pseudo);
   // Le badge n'est plus choisi séparément : il suit automatiquement le
@@ -952,9 +1045,11 @@ app.post("/toggle-overlay", (req, res) => {
 // ex: Super Carthon Plein) — miroir de "exclusive: true" côté overlay.js.
 const EXCLUSIVE_FRAMES = ["super"];
 
-app.post("/grant-frame", (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const { pseudo, frameKey } = req.body || {};
+app.post("/grant-frame", async (req, res) => {
+  const admin = checkAdmin(req, res);
+  if (!admin) return;
+  const { pseudo: typedPseudo, frameKey } = req.body || {};
+  const pseudo = typeof typedPseudo === "string" ? typedPseudo : null;
   if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
     return res.status(400).json({ error: "pseudo et frameKey requis" });
   }
@@ -964,18 +1059,29 @@ app.post("/grant-frame", (req, res) => {
   if (SEASONAL_FRAMES_LOCKED.includes(frameKey)) {
     return res.status(400).json({ error: "ce cadre saisonnier n'est pas encore distribuable (retire-le de SEASONAL_FRAMES_LOCKED dans server.js à l'ouverture de sa saison)" });
   }
-  grantFrame(pseudo, frameKey);
-  res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] });
+  if (!PURCHASABLE_FRAMES.includes(frameKey)) {
+    return res.status(400).json({ error: "cadre inconnu" });
+  }
+  const r = await resolveTypedPseudo(pseudo);
+  if (r.error) return res.status(404).json({ error: r.error });
+  grantFrame(r.pseudo, frameKey);
+  console.log("AUDIT grant-frame par " + (admin.user_id || "?") + " : " + frameKey + " -> " + r.pseudo + (r.unverified ? " (non vérifié chez Twitch)" : ""));
+  res.json({ ok: true, pseudo: r.pseudo, unlockedFrames: unlockedFramesByPseudo[r.pseudo] });
 });
 
-app.post("/revoke-frame", (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const { pseudo, frameKey } = req.body || {};
+app.post("/revoke-frame", async (req, res) => {
+  const admin = checkAdmin(req, res);
+  if (!admin) return;
+  const { pseudo: typedPseudo, frameKey } = req.body || {};
+  const pseudo = typeof typedPseudo === "string" ? typedPseudo : null;
   if (!pseudo || typeof pseudo !== "string" || !frameKey || typeof frameKey !== "string") {
     return res.status(400).json({ error: "pseudo et frameKey requis" });
   }
-  revokeFrame(pseudo, frameKey);
-  res.json({ ok: true, pseudo, unlockedFrames: unlockedFramesByPseudo[pseudo] || [] });
+  const r = await resolveTypedPseudo(pseudo);
+  if (r.error) return res.status(404).json({ error: r.error });
+  revokeFrame(r.pseudo, frameKey);
+  console.log("AUDIT revoke-frame par " + (admin.user_id || "?") + " : " + frameKey + " <- " + r.pseudo);
+  res.json({ ok: true, pseudo: r.pseudo, unlockedFrames: unlockedFramesByPseudo[r.pseudo] || [] });
 });
 
 // ---------- Résolution d'identité (identifiant Twitch réel -> pseudo) ----------
@@ -1002,7 +1108,54 @@ async function getAppAccessToken() {
   return appAccessToken;
 }
 
-app.get("/identify/:userId", async (req, res) => {
+// Pseudo (display_name) d'un identifiant Twitch numérique : d'abord notre mémoire (joueurs déjà
+// inscrits), sinon l'API Twitch. Renvoie null si introuvable.
+async function pseudoFromUserId(userId) {
+  if (pseudoByUserId[userId]) return pseudoByUserId[userId];
+  try {
+    const token = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?id=" + encodeURIComponent(userId), {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token },
+    });
+    const data = await r.json();
+    const user = data.data && data.data[0];
+    return user ? cleanPseudo(user.display_name) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Le streamer tape un pseudo à la main pour donner/retirer un cadre : on évite que la casse
+// ("carthonplein" au lieu de "CarthonPlein"), un "@" ou des espaces fassent atterrir le cadre
+// sur une fausse entrée que le joueur ne verrait jamais. Ordre : pseudo déjà connu du serveur
+// (insensible à la casse), puis recherche chez Twitch, sinon refus si Twitch dit que ce compte
+// n'existe pas (faute de frappe), sinon (Twitch injoignable) on garde la saisie telle quelle.
+async function resolveTypedPseudo(typed) {
+  const t = cleanPseudo(String(typed).trim().replace(/^@+/, ""));
+  if (!t) return { error: "pseudo vide" };
+  const low = t.toLowerCase();
+  const known = new Set([
+    ...Object.keys(unlockedFramesByPseudo), ...Object.keys(displayChoiceByPseudo),
+    ...Object.keys(winsByPseudo), ...Object.keys(gamesByPseudo),
+    ...Object.values(pseudoByUserId), ...state.players.map((p) => p.pseudo),
+  ]);
+  for (const k of known) if (typeof k === "string" && k.toLowerCase() === low) return { pseudo: k };
+  try {
+    const token = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?login=" + encodeURIComponent(low), {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token },
+    });
+    if (r.ok) {
+      const data = await r.json();
+      const user = data.data && data.data[0];
+      if (user) return { pseudo: cleanPseudo(user.display_name) };
+      return { error: "aucun compte Twitch ne s'appelle « " + t + " » (faute de frappe ?)" };
+    }
+  } catch (e) { /* Twitch injoignable : on garde la saisie */ }
+  return { pseudo: t, unverified: true };
+}
+
+app.get("/identify/:userId", rateLimit("identify", 60, 60000), async (req, res) => {
   const userId = req.params.userId;
   if (!/^\d+$/.test(userId)) {
     // Identifiant opaque (U- ou A-) : identité non partagée par le viewer
@@ -1019,7 +1172,7 @@ app.get("/identify/:userId", async (req, res) => {
     const data = await r.json();
     const user = data.data && data.data[0];
     if (!user) return res.json({ linked: false });
-    res.json({ linked: true, pseudo: user.display_name });
+    res.json({ linked: true, pseudo: cleanPseudo(user.display_name) });
   } catch (e) {
     res.status(500).json({ linked: false, error: "erreur API Twitch" });
   }
@@ -1066,6 +1219,19 @@ app.get("/auth/twitch/callback", async (req, res) => {
     const data = await r.json();
     if (!data.access_token) {
       return res.status(500).send("Échec de l'autorisation Twitch : " + JSON.stringify(data));
+    }
+    // Sécurité : seul le propriétaire de la chaîne peut enregistrer ce jeton. Sans ce contrôle,
+    // n'importe qui pourrait visiter cette adresse avec SON compte et remplacer le jeton du
+    // streamer (les abonnés ne seraient plus reconnus, donc plus de carton bonus).
+    if (CHANNEL_NAME) {
+      const meRes = await fetch("https://api.twitch.tv/helix/users", {
+        headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + data.access_token },
+      });
+      const me = meRes.ok ? await meRes.json() : null;
+      const login = me && me.data && me.data[0] && me.data[0].login;
+      if (!login || login.toLowerCase() !== CHANNEL_NAME.toLowerCase()) {
+        return res.status(403).send("Refusé : ce compte Twitch n'est pas le propriétaire de la chaîne " + CHANNEL_NAME + ".");
+      }
     }
     broadcasterTokens = {
       access_token: data.access_token,
@@ -1170,7 +1336,7 @@ async function checkIsSubscriber(userId) {
 // et cet endpoint fait tout le reste automatiquement à partir de son vrai
 // identifiant Twitch (jamais un pseudo fourni par le client, toujours vérifié
 // via le token signé par Twitch — donc impossible à falsifier).
-app.post("/register-by-identity", async (req, res) => {
+app.post("/register-by-identity", rateLimit("register", 30, 60000), async (req, res) => {
   const authHeader = req.headers["authorization"] || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const payload = verifyTwitchExtensionToken(token);
@@ -1186,7 +1352,7 @@ app.post("/register-by-identity", async (req, res) => {
     const data = await r.json();
     const user = data.data && data.data[0];
     if (!user) return res.status(500).json({ error: "pseudo introuvable" });
-    const pseudo = user.display_name;
+    const pseudo = cleanPseudo(user.display_name);
 
     reconcilePseudoRename(userId, pseudo);
     const isSub = await checkIsSubscriber(userId);
@@ -1221,7 +1387,7 @@ let ballLog = { gameId: null, byPseudo: {} }; // byPseudo[pseudo] = { last }
 // Même logique d'éligibilité que l'ancienne commande de chat (numéro sur le
 // carton, pas encore tiré, et il reste 3 numéros ou moins sur l'ensemble du
 // carton) — sauf que l'identité vient du token signé, jamais du client.
-app.post("/drop-ball", (req, res) => {
+app.post("/drop-ball", rateLimit("drop", 90, 60000), (req, res) => {
   const authHeader = req.headers["authorization"] || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const payload = verifyTwitchExtensionToken(token);
@@ -1332,8 +1498,8 @@ app.post("/trigger-duck", (req, res) => {
 app.post("/start-wheel-spin", (req, res) => {
   if (!checkAdmin(req, res)) return;
   const { names } = req.body || {};
-  if (!Array.isArray(names) || names.length < 2) {
-    return res.status(400).json({ error: "il faut au moins 2 pseudos" });
+  if (!Array.isArray(names) || names.length < 2 || names.length > 60 || !names.every((n) => typeof n === "string" && n.length > 0 && n.length <= 80)) {
+    return res.status(400).json({ error: "il faut entre 2 et 60 pseudos valides" });
   }
   const winnerIndex = Math.floor(Math.random() * names.length);
   const winnerLabel = names[winnerIndex];
@@ -1384,7 +1550,8 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
     if (self) return;
     const text = message.trim().toLowerCase();
     if (text === "!carthon") {
-      const pseudo = tags["display-name"] || tags.username;
+      const pseudo = cleanPseudo(tags["display-name"] || tags.username);
+      if (!pseudo) return;
       const isSub = !!tags.subscriber;
       // tags["user-id"] est l'identifiant Twitch stable du viewer (ne change
       // jamais, contrairement au pseudo) : sert à détecter un renommage et à
@@ -1421,14 +1588,63 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
 }
 
+// Données à ne JAMAIS perdre : clé Redis -> [lecteur, écriture en mémoire, valeur par défaut]
+const PERSISTED = {
+  unlockedFramesByPseudo: [() => unlockedFramesByPseudo, (v) => { unlockedFramesByPseudo = v; }, {}],
+  displayChoiceByPseudo: [() => displayChoiceByPseudo, (v) => { displayChoiceByPseudo = v; }, {}],
+  winsByPseudo: [() => winsByPseudo, (v) => { winsByPseudo = v; }, {}],
+  gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
+  pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
+  overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
+  lastWinner: [() => lastWinner, (v) => { lastWinner = v; }, null],
+};
+
+// Copie de sauvegarde datée (une par jour et par clé, jamais écrasée) : si un jour une erreur
+// abîme les données, on peut retrouver l'état de la veille dans la console Upstash
+// (clés "backup:AAAA-MM-JJ:nomdelaclé").
+async function dailyBackup() {
+  if (!REDIS_ENABLED || !dataReady) return;
+  const day = new Date().toISOString().slice(0, 10);
+  for (const key of Object.keys(PERSISTED)) {
+    if (redisUnreadable.has(key)) continue;
+    const bkey = "backup:" + day + ":" + key;
+    const existing = await redisGetJSON(bkey, undefined, 2);
+    if (redisUnreadable.has(bkey)) { redisUnreadable.delete(bkey); continue; } // lecture en erreur : on ne risque pas d'écraser
+    if (existing !== undefined) continue; // la sauvegarde du jour existe déjà
+    const value = PERSISTED[key][0]();
+    if (value === null || (typeof value === "object" && Object.keys(value).length === 0)) continue;
+    await redisSetJSON(bkey, value);
+  }
+}
+
+// Si une clé était illisible au démarrage, on réessaie régulièrement ; dès qu'elle revient,
+// on fusionne : les données de Redis servent de base, les changements faits entre-temps en
+// mémoire (pseudo par pseudo) gardent la priorité.
+async function retryUnreadableKeys() {
+  for (const key of [...redisUnreadable]) {
+    if (!PERSISTED[key]) continue;
+    const loaded = await redisGetJSON(key, undefined, 2);
+    if (loaded === undefined || redisUnreadable.has(key)) continue;
+    const [get, set] = PERSISTED[key];
+    const mem = get();
+    set(typeof loaded === "object" && loaded !== null && typeof mem === "object" && mem !== null ? { ...loaded, ...mem } : loaded);
+    console.log("Redis : clé " + key + " enfin relue, données fusionnées.");
+    await redisSetJSON(key, get());
+  }
+}
+
 (async () => {
-  unlockedFramesByPseudo = await redisGetJSON("unlockedFramesByPseudo", {});
-  displayChoiceByPseudo = await redisGetJSON("displayChoiceByPseudo", {});
-  winsByPseudo = await redisGetJSON("winsByPseudo", {});
-  gamesByPseudo = await redisGetJSON("gamesByPseudo", {});
-  pseudoByUserId = await redisGetJSON("pseudoByUserId", {});
-  overlayVisible = await redisGetJSON("overlayVisible", true);
-  lastWinner = await redisGetJSON("lastWinner", null);
+  for (const key of Object.keys(PERSISTED)) {
+    const [, set, fallback] = PERSISTED[key];
+    set(await redisGetJSON(key, fallback, 5));
+  }
+  dataReady = true;
+  if (redisUnreadable.size > 0) {
+    console.error("⚠️ ATTENTION : clés Redis illisibles au démarrage (" + [...redisUnreadable].join(", ") + ") — elles ne seront PAS écrasées ; nouvelle tentative toutes les 30 s.");
+  }
+  setInterval(retryUnreadableKeys, 30000);
+  dailyBackup().catch(() => {});
+  setInterval(() => dailyBackup().catch(() => {}), 6 * 3600 * 1000);
   console.log(
     REDIS_ENABLED
       ? "Stockage persistant Redis connecté — cadres/badges/titres restaurés."
@@ -1437,6 +1653,19 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
 
   // Résout l'ID de NOTRE chaîne avant d'accepter des requêtes (garde-fou de chaîne)
   await resolveAllowedChannel();
+
+  // Redéploiement Render = signal d'arrêt : on laisse les écritures Redis en cours se terminer.
+  process.on("SIGTERM", async () => {
+    for (let i = 0; i < 40 && [...writeState.values()].some((s) => s.running || s.dirty); i++) await sleep(100);
+    process.exit(0);
+  });
+
+  // Dernier filet : une erreur imprévue ne doit jamais révéler de détails internes.
+  app.use((err, req, res, next) => {
+    console.error("Erreur non gérée :", err && err.message);
+    if (res.headersSent) return next(err);
+    res.status(err && err.status === 400 ? 400 : 500).json({ error: "erreur serveur" });
+  });
 
   app.listen(PORT, () => {
     console.log("Serveur démarré sur le port " + PORT);
