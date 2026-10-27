@@ -638,20 +638,24 @@ app.get("/privacy", (req, res) => {
 </head>
 <body>
   <h1>🐟 Politique de confidentialité - Carthon Plein</h1>
-  <p><em>Dernière mise à jour : 2026</em></p>
-  <h2>Ce que l'extension utilise</h2>
-  <p>Carthon Plein est une extension Twitch de loto/bingo interactif. Pour fonctionner, elle utilise :</p>
+  <p><em>Dernière mise à jour : octobre 2026</em></p>
+  <h2>Ce que l'extension utilise et enregistre</h2>
+  <p>Carthon Plein est une extension Twitch de loto/bingo interactif, gratuite, qui s'affiche par-dessus le stream de la chaîne carthonplein. Pour fonctionner, elle utilise et conserve :</p>
   <ul>
-    <li>Votre pseudo Twitch, obtenu via l'autorisation d'identité Twitch lorsque vous vous inscrivez avec le bouton "S'inscrire", ou votre pseudo de chat si vous vous inscrivez via la commande "!carthon" — utilisé uniquement pour générer votre carton et l'afficher dans le classement de la partie en cours.</li>
+    <li>Votre pseudo Twitch, obtenu via l'autorisation d'identité Twitch (vous n'êtes jamais obligé de la donner : sans elle, vous pouvez regarder la partie mais pas jouer). Il sert à générer votre carton, à l'afficher dans le classement et à annoncer les gagnants.</li>
     <li>Votre statut d'abonné à la chaîne (le cas échéant), pour vous attribuer un carton bonus.</li>
+    <li>Votre progression dans le jeu, conservée d'une partie à l'autre : les cadres de carton débloqués, le nombre de victoires, le nombre de parties jouées, le fait d'avoir joué la soirée de lancement, ainsi que le cadre et le titre que vous avez choisi d'afficher. Ces informations servent uniquement à vous attribuer vos cadres et vos titres.</li>
   </ul>
+  <h2>Où sont stockées les données</h2>
+  <p>Les données sont hébergées sur des serveurs situés aux États-Unis (hébergeur Render pour le serveur du jeu, base de données Upstash Redis pour le stockage). Des copies de sauvegarde quotidiennes sont faites pour éviter de perdre les cadres et les victoires des joueurs.</p>
   <h2>Ce que l'extension NE fait PAS</h2>
   <ul>
-    <li>Elle ne collecte aucune donnée personnelle au-delà du pseudo utilisé pour la partie.</li>
-    <li>Elle ne partage aucune information avec des tiers.</li>
-    <li>Elle ne stocke aucune donnée au-delà de la durée d'une partie (les données sont effacées à chaque nouvelle partie).</li>
-    <li>Elle n'utilise aucun cookie de suivi.</li>
+    <li>Elle ne collecte ni adresse e-mail, ni nom réel, ni donnée de paiement, ni autre donnée personnelle que celles listées ci-dessus.</li>
+    <li>Elle ne vend et ne partage aucune information avec des tiers, en dehors des hébergeurs techniques cités plus haut.</li>
+    <li>Elle n'utilise aucun cookie de suivi et aucune publicité.</li>
   </ul>
+  <h2>Vos droits</h2>
+  <p>Vous pouvez demander à tout moment l'accès à vos données, leur correction ou leur suppression (pseudo, cadres, victoires, parties jouées) en écrivant à l'adresse ci-dessous.</p>
   <h2>Contact</h2>
   <p>Pour toute question : <a href="mailto:carthonplein@gmail.com">carthonplein@gmail.com</a></p>
 </body>
