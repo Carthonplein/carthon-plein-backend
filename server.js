@@ -923,7 +923,7 @@ app.get("/reglement", (req, res) => {
   <p>La participation est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement.</p>
 
   <h2>Article 3 — Modalités du jeu</h2>
-  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" dans le panneau de l'extension pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch), ou, alternativement, tape la commande "!carthon" dans le chat de la chaîne. Un carton personnel est alors généré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
 
   <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
@@ -934,8 +934,16 @@ app.get("/reglement", (req, res) => {
   <h2>Article 6 — Participants mineurs</h2>
   <p>La participation au jeu lui-même est ouverte sans condition d'âge. En revanche, si un gagnant est mineur, la remise du lot est conditionnée à l'accord explicite d'un parent ou représentant légal, qui devra être en copie des échanges relatifs à l'envoi du lot.</p>
 
-  <h2>Article 7 — Données personnelles</h2>
-  <p>Les seules données collectées sont le pseudo Twitch (obtenu via l'autorisation d'identité Twitch lors de l'inscription par bouton, ou via le pseudo de chat en cas d'inscription par la commande "!carthon"), utilisé pour le déroulement du jeu, et, en cas de gain d'un lot physique, une adresse postale, demandée uniquement au gagnant et utilisée exclusivement pour l'envoi du lot. Cette adresse n'est conservée que le temps nécessaire à l'expédition, puis supprimée. Aucune donnée n'est partagée avec des tiers. Pour toute question relative à vos données : carthonplein@gmail.com</p>
+  <h2 id="donnees">Article 7 — Données personnelles</h2>
+  <p>Pour fonctionner, l'extension utilise et conserve :</p>
+  <ul>
+    <li>le pseudo Twitch du joueur, obtenu via l'autorisation d'identité Twitch donnée lors de l'inscription (sans cette autorisation, il est possible de regarder la partie mais pas d'y participer) : il sert à générer le carton, à l'afficher dans le classement et à annoncer les gagnants ;</li>
+    <li>le statut d'abonné à la chaîne, pour attribuer le carton bonus ;</li>
+    <li>la progression du joueur d'une partie à l'autre : cadres de carton débloqués, nombre de victoires, nombre de parties jouées, participation à la soirée de lancement, cadre et titre choisis pour l'affichage. Ces informations servent uniquement à attribuer les cadres et les titres ;</li>
+    <li>en cas de gain d'un lot physique, une adresse postale, demandée uniquement au gagnant et utilisée exclusivement pour l'envoi du lot. Elle n'est conservée que le temps nécessaire à l'expédition, puis supprimée.</li>
+  </ul>
+  <p>Ces données sont hébergées sur des serveurs situés aux États-Unis (Render pour le serveur du jeu, Upstash Redis pour le stockage), avec des sauvegardes quotidiennes pour éviter de perdre les cadres et les victoires des joueurs. Aucune donnée n'est vendue ni partagée avec des tiers en dehors de ces hébergeurs techniques ; l'extension n'utilise ni cookie de suivi ni publicité.</p>
+  <p>Chaque joueur peut demander à tout moment l'accès à ses données, leur correction ou leur suppression (pseudo, cadres, victoires, parties jouées) en écrivant à carthonplein@gmail.com.</p>
 
   <h2>Article 8 — Responsabilité</h2>
   <p>Ce jeu est organisé par la chaîne Carthon Plein et n'est ni sponsorisé, ni géré, ni associé à Twitch Interactive, Inc. L'organisateur ne saurait être tenu responsable en cas de dysfonctionnement technique indépendant de sa volonté (panne, coupure internet, bug de l'extension) empêchant le bon déroulement d'une partie.</p>
