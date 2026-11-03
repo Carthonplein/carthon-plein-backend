@@ -255,6 +255,7 @@ let state = {
   pendingFinalistsDrawCount: null, // nombre de tirages au moment de l'égalité, pour savoir si ce sera un Super Carthon Plein
   wheelSpin: null, // { id, names, winnerIndex, ts } — animation de roue partagée avec tous les viewers
   started: false, // devient true dès le premier clic sur "Nouvelle partie" (rend l'overlay visible aux viewers)
+  registrationEndsAt: null, // minuteur d'inscription (ms depuis 1970) ou null, fixé par "Nouvelle partie"
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
   duckEvent: null, // { id, ts } — easter egg "canard volant", déclenché manuellement par le streamer
@@ -406,6 +407,7 @@ function reconcilePseudoRename(userId, newPseudo) {
 // Volontairement en dehors de `state` pour survivre à "Nouvelle partie",
 // et persisté sur Redis pour survivre aussi à un redémarrage du serveur.
 let overlayVisible = true;
+let overlayVolume = 1; // volume des sons de l'overlay pour tous les viewers (0 à 1), réglé par le streamer
 
 // Dernier gagnant d'un Carthon Plein, mémorisé quand le streamer lance une
 // "Nouvelle partie" (sinon son nom disparaîtrait avec le reste de `state`).
@@ -608,11 +610,20 @@ function cleanPseudo(s) {
   return String(s == null ? "" : s).replace(/[<>&"'`\\]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
 }
 
+// Les inscriptions sont ouvertes tant que la partie n'a pas commencé ET que le minuteur
+// (s'il y en a un) n'est pas écoulé.
+function registrationIsOpen() {
+  if (gamePhase() !== "lobby") return false;
+  if (state.registrationEndsAt && Date.now() >= state.registrationEndsAt) return false;
+  return true;
+}
+
 // Inscription partagée entre le bouton du panel (HTTP) et la commande de chat
 function registerPlayerInternal(pseudo, isSub) {
   pseudo = cleanPseudo(pseudo);
   if (!pseudo) return { ok: false, reason: "invalid" };
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
+  if (!registrationIsOpen()) return { ok: false, reason: "closed" };
   if (!state.players.some((p) => p.pseudo === pseudo)) {
     state.players.push({ pseudo, isSub: !!isSub });
   }
@@ -923,7 +934,7 @@ app.get("/reglement", (req, res) => {
   <p>La participation est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement.</p>
 
   <h2>Article 3 — Modalités du jeu</h2>
-  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
 
   <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
@@ -967,6 +978,10 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub })),
     gamePhase: gamePhase(),
+    registrationOpen: registrationIsOpen(),
+    registrationEndsAt: state.registrationEndsAt,
+    serverTime: Date.now(),
+    overlayVolume,
     started: state.started,
     tierWinners: state.tierWinners,
     winner: state.winner,
@@ -1043,6 +1058,16 @@ app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res
   if (title !== undefined) displayChoiceByPseudo[pseudo].title = title || "none";
   redisSetJSON("displayChoiceByPseudo", displayChoiceByPseudo);
   res.json({ ok: true, displayChoice: displayChoiceByPseudo[pseudo] });
+});
+
+// Volume des sons de l'overlay pour TOUS les viewers (0 à 100), réglé par le streamer/modérateur.
+app.post("/set-volume", rateLimit("setvolume", 60, 60000), (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const v = Number(req.body && req.body.volume);
+  if (!Number.isFinite(v) || v < 0 || v > 100) return res.status(400).json({ error: "volume invalide (0 à 100)" });
+  overlayVolume = Math.round(v) / 100;
+  redisSetJSON("overlayVolume", overlayVolume);
+  res.json({ ok: true, overlayVolume });
 });
 
 app.post("/toggle-overlay", (req, res) => {
@@ -1488,7 +1513,10 @@ app.post("/reset", (req, res) => {
     redisSetJSON("lastWinner", lastWinner);
   }
   recordGameParticipation();
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [] };
+  // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
+  const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
+  const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [], registrationEndsAt: regEnd };
   res.json({ ok: true });
 });
 
@@ -1608,6 +1636,7 @@ const PERSISTED = {
   gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
   pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
+  overlayVolume: [() => overlayVolume, (v) => { overlayVolume = (typeof v === "number" && v >= 0 && v <= 1) ? v : 1; }, 1],
   lastWinner: [() => lastWinner, (v) => { lastWinner = v; }, null],
 };
 
