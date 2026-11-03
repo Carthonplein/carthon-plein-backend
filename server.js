@@ -1606,13 +1606,6 @@ app.post("/minigame-hit", rateLimit("minigame", 30, 60000), async (req, res) => 
   res.json({ ok: true, won: true, winner: pseudo });
 });
 
-// Bouton streamer pour lancer la bouteille à la main (test ou animation libre).
-app.post("/trigger-minigame", (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  startMiniGame("pastis");
-  res.json({ ok: true });
-});
-
 app.post("/start-wheel-spin", (req, res) => {
   if (!checkAdmin(req, res)) return;
   const { names } = req.body || {};
