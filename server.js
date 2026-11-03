@@ -258,6 +258,7 @@ let state = {
   registrationEndsAt: null, // minuteur d'inscription (ms depuis 1970) ou null, fixé par "Nouvelle partie"
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
+  miniGame: null, // mini-jeu en cours { id, type, ts, winner } (ex. bouteille de pastis au n°51)
   duckEvent: null, // { id, ts } — easter egg "canard volant", déclenché manuellement par le streamer
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
 };
@@ -993,6 +994,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     overlayVisible,
     lockedFrames: SEASONAL_FRAMES_LOCKED,
     duckEvent: state.duckEvent,
+    miniGame: publicMiniGame(),
     panDrops: state.panDrops,
     lastWinner: lastWinner ? { ...lastWinner, ...getPublicStatus(lastWinner.pseudo) } : null,
   });
@@ -1494,6 +1496,7 @@ app.post("/draw", (req, res) => {
   const n = remaining[Math.floor(Math.random() * remaining.length)];
   state.drawn.push(n);
   refreshTiersAndWinner();
+  if (MINIGAME_BY_NUMBER[n]) startMiniGame(MINIGAME_BY_NUMBER[n]);
   res.json({ drawn: n });
 });
 
@@ -1516,7 +1519,7 @@ app.post("/reset", (req, res) => {
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, panDrops: [], registrationEndsAt: regEnd };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, miniGame: null, panDrops: [], registrationEndsAt: regEnd };
   res.json({ ok: true });
 });
 
@@ -1533,6 +1536,81 @@ app.post("/trigger-duck", (req, res) => {
     ts: Date.now(),
   };
   res.json({ ok: true, duckEvent: state.duckEvent });
+});
+
+
+// ---------- Mini-jeux ----------
+// Numéro tiré -> mini-jeu. Pour l'instant : le 51 fait tomber une bouteille de
+// pastis que les viewers doivent éclater à la souris ; le premier dont le clic
+// arrive au serveur gagne et son nom s'affiche pour tout le monde.
+const MINIGAME_BY_NUMBER = { 51: "pastis" };
+const MINIGAME_WINDOW_MS = 18000; // le serveur accepte les clics pendant 18 s (la chute dure ~9 s à l'écran)
+const pseudoCacheByUserId = new Map();
+
+function startMiniGame(type) {
+  state.miniGame = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type,
+    ts: Date.now(),
+    winner: null,
+  };
+}
+function publicMiniGame() {
+  const m = state.miniGame;
+  if (!m) return null;
+  return {
+    id: m.id, type: m.type, ts: m.ts,
+    windowMs: MINIGAME_WINDOW_MS,
+    winner: m.winner ? { pseudo: m.winner.pseudo, ...getPublicStatus(m.winner.pseudo) } : null,
+  };
+}
+async function pseudoForUserId(userId) {
+  if (pseudoByUserId[userId]) return pseudoByUserId[userId];
+  if (pseudoCacheByUserId.has(userId)) return pseudoCacheByUserId.get(userId);
+  if (!/^\d+$/.test(String(userId))) return null;
+  try {
+    const token = await getAppAccessToken();
+    const r = await fetch("https://api.twitch.tv/helix/users?id=" + userId, {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token },
+    });
+    const data = await r.json();
+    const user = data.data && data.data[0];
+    if (!user) return null;
+    const pseudo = cleanPseudo(user.display_name);
+    if (pseudoCacheByUserId.size > 5000) pseudoCacheByUserId.clear();
+    pseudoCacheByUserId.set(userId, pseudo);
+    return pseudo;
+  } catch (e) { return null; }
+}
+
+// Un viewer a cliqué sur la bouteille. Il faut avoir partagé son identité Twitch
+// (le jeton le prouve). Le premier clic valide gagne ; JavaScript traite les
+// requêtes une par une, donc il ne peut pas y avoir deux gagnants.
+app.post("/minigame-hit", rateLimit("minigame", 30, 60000), async (req, res) => {
+  const authHeader = req.headers["authorization"] || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const payload = verifyTwitchExtensionToken(token);
+  if (!payload) return res.status(401).json({ error: "token invalide" });
+  if (!payload.user_id) return res.json({ ok: true, won: false, reason: "no_identity" });
+  const m0 = state.miniGame;
+  if (!m0 || String(req.body && req.body.id) !== m0.id) return res.json({ ok: true, won: false, reason: "expired" });
+  if (m0.winner) return res.json({ ok: true, won: false, reason: "taken", winner: m0.winner.pseudo });
+  const pseudo = await pseudoForUserId(payload.user_id);
+  if (!pseudo) return res.json({ ok: true, won: false, reason: "no_identity" });
+  // on relit l'état APRÈS l'attente réseau : quelqu'un a pu gagner entre-temps
+  const m = state.miniGame;
+  if (!m || m.id !== m0.id) return res.json({ ok: true, won: false, reason: "expired" });
+  if (m.winner) return res.json({ ok: true, won: false, reason: "taken", winner: m.winner.pseudo });
+  if (Date.now() - m.ts > MINIGAME_WINDOW_MS) return res.json({ ok: true, won: false, reason: "expired" });
+  m.winner = { pseudo, ts: Date.now() };
+  res.json({ ok: true, won: true, winner: pseudo });
+});
+
+// Bouton streamer pour lancer la bouteille à la main (test ou animation libre).
+app.post("/trigger-minigame", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  startMiniGame("pastis");
+  res.json({ ok: true });
 });
 
 app.post("/start-wheel-spin", (req, res) => {
