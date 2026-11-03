@@ -1699,6 +1699,40 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   console.log("Bot de chat non configuré (BOT_USERNAME / BOT_OAUTH_TOKEN / CHANNEL_NAME manquants) — l'inscription par bouton reste disponible.");
 }
 
+
+// ---------- Sauvegarde de la partie en cours ----------
+function gameSnapshot() {
+  return {
+    drawn: state.drawn, players: state.players, tierWinners: state.tierWinners, winner: state.winner,
+    pendingFinalists: state.pendingFinalists, pendingFinalistsDrawCount: state.pendingFinalistsDrawCount,
+    started: state.started, gameId: state.gameId, registrationEndsAt: state.registrationEndsAt,
+  };
+}
+function restoreGameSnapshot(v) {
+  if (!v || typeof v !== "object" || !Array.isArray(v.drawn) || !Array.isArray(v.players) || typeof v.gameId !== "string") return;
+  state = {
+    ...state,
+    drawn: v.drawn.filter((n) => Number.isInteger(n)),
+    players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub })),
+    tierWinners: v.tierWinners && typeof v.tierWinners === "object" ? v.tierWinners : { 1: null, 2: null, 3: null },
+    winner: v.winner || null,
+    pendingFinalists: Array.isArray(v.pendingFinalists) ? v.pendingFinalists : [],
+    pendingFinalistsDrawCount: v.pendingFinalistsDrawCount == null ? null : v.pendingFinalistsDrawCount,
+    started: !!v.started,
+    gameId: v.gameId,
+    registrationEndsAt: typeof v.registrationEndsAt === "number" ? v.registrationEndsAt : null,
+  };
+  console.log("Partie en cours restaurée depuis Redis : " + state.players.length + " inscrits, " + state.drawn.length + " numéros tirés.");
+}
+let lastSnapshotJson = null;
+function saveGameSnapshotIfChanged() {
+  if (!dataReady || redisUnreadable.has("gameSnapshot")) return;
+  const json = JSON.stringify(gameSnapshot());
+  if (json === lastSnapshotJson) return;
+  lastSnapshotJson = json;
+  redisSetJSON("gameSnapshot", gameSnapshot());
+}
+
 // Données à ne JAMAIS perdre : clé Redis -> [lecteur, écriture en mémoire, valeur par défaut]
 const PERSISTED = {
   unlockedFramesByPseudo: [() => unlockedFramesByPseudo, (v) => { unlockedFramesByPseudo = v; }, {}],
@@ -1709,6 +1743,9 @@ const PERSISTED = {
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
   overlayVolume: [() => overlayVolume, (v) => { overlayVolume = (typeof v === "number" && v >= 0 && v <= 1) ? v : 1; }, 1],
   lastWinner: [() => lastWinner, (v) => { lastWinner = v; }, null],
+  // Partie en cours (inscrits, numéros tirés, gagnants...) : sans ça, un redémarrage du serveur
+  // (redéploiement, plantage) effaçait la partie et les joueurs perdaient leur carton.
+  gameSnapshot: [gameSnapshot, restoreGameSnapshot, null],
 };
 
 // Copie de sauvegarde datée (une par jour et par clé, jamais écrasée) : si un jour une erreur
@@ -1754,6 +1791,8 @@ async function retryUnreadableKeys() {
   if (redisUnreadable.size > 0) {
     console.error("⚠️ ATTENTION : clés Redis illisibles au démarrage (" + [...redisUnreadable].join(", ") + ") — elles ne seront PAS écrasées ; nouvelle tentative toutes les 30 s.");
   }
+  lastSnapshotJson = JSON.stringify(gameSnapshot());
+  setInterval(saveGameSnapshotIfChanged, 1500);
   setInterval(retryUnreadableKeys, 30000);
   dailyBackup().catch(() => {});
   setInterval(() => dailyBackup().catch(() => {}), 6 * 3600 * 1000);
@@ -1768,6 +1807,7 @@ async function retryUnreadableKeys() {
 
   // Redéploiement Render = signal d'arrêt : on laisse les écritures Redis en cours se terminer.
   process.on("SIGTERM", async () => {
+    try { saveGameSnapshotIfChanged(); } catch (e) {}
     for (let i = 0; i < 40 && [...writeState.values()].some((s) => s.running || s.dirty); i++) await sleep(100);
     process.exit(0);
   });
