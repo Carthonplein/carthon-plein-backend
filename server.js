@@ -1549,8 +1549,8 @@ const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
 const PINATA_MS = 20000;            // durée pour casser la piñata
-const PINATA_CLICKS_PER_PLAYER = 20; // objectif = inscrits x 20 coups...
-const PINATA_MIN = 80, PINATA_MAX = 1500; // ...borné entre 80 et 1500
+const PINATA_CLICKS_PER_PLAYER = 150; // objectif = inscrits x 150 coups...
+const PINATA_MIN = 150, PINATA_MAX = 30000; // ...borné entre 150 et 30000
 const PINATA_MAX_CPS = 14;          // cadence maximale acceptée côté serveur : 12 coups / s / viewer (le client en envoie 10 max)
 const DUCK_MS = 20000;          // durée de la chasse au canard
 const DUCK_RADIUS = 6.5;        // rayon de touche (en % de la largeur de l'écran) : petit, le canard est difficile
