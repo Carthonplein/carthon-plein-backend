@@ -408,6 +408,7 @@ function reconcilePseudoRename(userId, newPseudo) {
 // Volontairement en dehors de `state` pour survivre à "Nouvelle partie",
 // et persisté sur Redis pour survivre aussi à un redémarrage du serveur.
 let overlayVisible = true;
+let overlayDelayMs = 0; // décalage ajouté par le streamer à l'affichage des viewers (en plus du retard vidéo mesuré par Twitch)
 let overlayVolume = 1; // volume des sons de l'overlay pour tous les viewers (0 à 1), réglé par le streamer
 
 // Dernier gagnant d'un Carthon Plein, mémorisé quand le streamer lance une
@@ -983,6 +984,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     registrationEndsAt: state.registrationEndsAt,
     serverTime: Date.now(),
     overlayVolume,
+    overlayDelayMs,
     started: state.started,
     tierWinners: state.tierWinners,
     winner: state.winner,
@@ -1063,6 +1065,15 @@ app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res
 });
 
 // Volume des sons de l'overlay pour TOUS les viewers (0 à 100), réglé par le streamer/modérateur.
+app.post("/set-delay", rateLimit("setdelay", 60, 60000), (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const ms = Number(req.body && req.body.ms);
+  if (!Number.isFinite(ms) || ms < 0 || ms > 20000) return res.status(400).json({ error: "décalage invalide (0 à 20000 ms)" });
+  overlayDelayMs = Math.round(ms / 500) * 500;
+  redisSetJSON("overlayDelayMs", overlayDelayMs);
+  res.json({ ok: true, overlayDelayMs });
+});
+
 app.post("/set-volume", rateLimit("setvolume", 60, 60000), (req, res) => {
   if (!checkAdmin(req, res)) return;
   const v = Number(req.body && req.body.volume);
@@ -1850,6 +1861,7 @@ const PERSISTED = {
   gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
   pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
+  overlayDelayMs: [() => overlayDelayMs, (v) => { overlayDelayMs = (typeof v === "number" && v >= 0 && v <= 20000) ? v : 0; }, 0],
   overlayVolume: [() => overlayVolume, (v) => { overlayVolume = (typeof v === "number" && v >= 0 && v <= 1) ? v : 1; }, 1],
   lastWinner: [() => lastWinner, (v) => { lastWinner = v; }, null],
   // Partie en cours (inscrits, numéros tirés, gagnants...) : sans ça, un redémarrage du serveur
