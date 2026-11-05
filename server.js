@@ -1546,7 +1546,8 @@ app.post("/draw", (req, res) => {
 app.post("/reset", async (req, res) => {
   if (!checkAdmin(req, res)) return;
   // Meilleur joueur des mini-jeux de la partie qui se termine => carton bonus pour la partie qui commence.
-  let nextMiniBonus = null;
+  // Si la partie en cours n'a pas été jouée (aucun numéro tiré, aucun point), on garde le bonus déjà attribué (ex. : "Nouvelle partie" cliqué en fin de soirée, puis de nouveau la semaine suivante).
+  let nextMiniBonus = state.drawn.length === 0 && !Object.keys(state.miniPoints || {}).length ? state.miniBonus || null : null;
   const best = miniRanking()[0];
   if (best && best.pts > 0) {
     const bp = best.pseudo || (await pseudoForUserId(best.userId));
