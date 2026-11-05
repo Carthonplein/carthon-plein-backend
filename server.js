@@ -1536,7 +1536,7 @@ app.post("/reset", (req, res) => {
 // Numéro tiré -> mini-jeu :
 //   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point)
 //   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
-//   69 : le canard fou : il traverse l'écran très vite dans tous les sens ; le premier à cliquer dessus gagne
+//   69 : le canard fou : il file très vite dans tous les sens ; chacun essaie de le toucher, classement au temps mis
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1553,7 +1553,7 @@ const PINATA_CLICKS_PER_PLAYER = 20; // objectif = inscrits x 20 coups...
 const PINATA_MIN = 80, PINATA_MAX = 1500; // ...borné entre 80 et 1500
 const PINATA_MAX_CPS = 14;          // cadence maximale acceptée côté serveur : 12 coups / s / viewer (le client en envoie 10 max)
 const DUCK_MS = 20000;          // durée de la chasse au canard
-const DUCK_RADIUS = 9;          // rayon de touche (en % de la largeur de l'écran)
+const DUCK_RADIUS = 6.5;        // rayon de touche (en % de la largeur de l'écran) : petit, le canard est difficile
 const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
 const pseudoCacheByUserId = new Map();
 
@@ -1571,7 +1571,7 @@ function buildDuckPath() {
       dist = Math.hypot(nx - px, (ny - py) * 9 / 16);
       tries++;
     } while (dist < 22 && tries < 20);
-    const speed = 50 + Math.random() * 35;
+    const speed = 75 + Math.random() * 45;
     t += Math.max(250, Math.round(dist / speed * 1000));
     pts.push([t, Math.round(nx * 10) / 10, Math.round(ny * 10) / 10]);
   }
@@ -1633,7 +1633,7 @@ function startMiniGame(type) {
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
   } else if (type === "canard") {
     m.path = buildDuckPath();
-    m.winnerId = null;
+    m.hits = new Map();  // userId -> temps mis (ms) pour toucher le canard
     m.done = false;
     m.tries = new Map(); // userId -> heure du dernier essai raté
     m.endsAt = m.ts + DUCK_MS + MG_SLACK_MS;
@@ -1656,8 +1656,9 @@ async function finalizeMiniGame(m) {
   if (m.type === "canard") {
     if (m.finalizing) return;
     m.finalizing = true;
-    const pseudo = m.winnerId ? await pseudoForUserId(m.winnerId) : null;
-    if (state.miniGame === m) m.results = { winner: m.winnerId ? (pseudo || "Un viewer") : null };
+    const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => a.ms - b.ms).slice(0, 3);
+    const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
+    if (state.miniGame === m) m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size };
     return;
   }
   if (m.type === "pinata") {
@@ -1684,7 +1685,7 @@ function publicMiniGame() {
   if (!m) return null;
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
-  else if (m.type === "canard") { out.done = !!m.done; out.durationMs = DUCK_MS; if (!m.done && Date.now() < m.endsAt) out.path = m.path; }
+  else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
   else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
   return out;
 }
@@ -1747,15 +1748,17 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
   }
   if (m.type === "canard") {
     // Le viewer annonce où et quand il a cliqué (x, y en % de l'écran, t = heure serveur estimée).
-    if (m.done || m.results) return res.json({ ok: true, hit: false, done: true });
+    // Chacun peut toucher le canard une fois ; le classement se fait au temps mis depuis le départ.
+    if (m.results) return res.json({ ok: true, hit: false, reason: "expired" });
+    if (m.hits.has(payload.user_id)) return res.json({ ok: true, hit: false, already: true, ms: m.hits.get(payload.user_id) });
     if (now < m.ts || now > m.ts + DUCK_MS + MG_SLACK_MS) return res.json({ ok: true, hit: false, reason: "expired" });
     const last = m.tries.get(payload.user_id) || 0;
     if (now - last < 120) return res.json({ ok: true, hit: false, reason: "slow_down" });
     const x = Number(req.body.x), y = Number(req.body.y);
     let t = Number(req.body.t);
     if (![x, y, t].every(Number.isFinite)) return res.json({ ok: true, hit: false });
-    t = Math.max(now - DUCK_T_SLACK_MS - 1000, Math.min(now + DUCK_T_SLACK_MS, t));
-    // on accepte si le clic est sur le canard à l'heure annoncée, ou à l'heure serveur (± petite marge réseau)
+    t = Math.max(now - DUCK_T_SLACK_MS - 400, Math.min(now, t));
+    // le clic doit être sur le canard à l'heure annoncée (ou à l'heure serveur, petite marge réseau)
     let ok = false;
     for (const tt of [t, now - 100, now]) {
       const [cx, cy] = duckPosAt(m.path, tt - m.ts);
@@ -1765,10 +1768,10 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
       if (m.tries.size < MG_MAX_USERS) m.tries.set(payload.user_id, now);
       return res.json({ ok: true, hit: false });
     }
-    m.winnerId = payload.user_id; // premier arrivé, premier servi (Node traite un clic à la fois)
-    m.done = true;
-    finalizeMiniGame(m).catch(() => {});
-    return res.json({ ok: true, hit: true, done: true });
+    if (m.hits.size >= MG_MAX_USERS) return res.json({ ok: true, hit: false, reason: "full" });
+    const ms = Math.max(0, Math.round(t - m.ts));
+    m.hits.set(payload.user_id, ms);
+    return res.json({ ok: true, hit: true, ms });
   }
   const list = Array.isArray(req.body.bottles) ? req.body.bottles.slice(0, 80) : [];
   let entry = m.scores.get(payload.user_id);
