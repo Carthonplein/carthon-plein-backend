@@ -1539,6 +1539,7 @@ app.post("/reset", (req, res) => {
 //   69 : le canard fou : il file très vite dans tous les sens ; chacun essaie de le toucher, classement au temps mis
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
 //   33 : mémoire de thons : 12 cartes (6 paires) à retrouver le plus vite possible, classement au temps
+//   75 : Simon : reproduire une suite de couleurs/sons de plus en plus longue ; le plus de manches gagne (égalité : le plus rapide)
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1546,7 +1547,7 @@ app.post("/reset", (req, res) => {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire" };
+const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "simon" };
 const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
@@ -1562,6 +1563,9 @@ const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
 const MEM_PAIRS = 6;            // mémoire : 6 paires = 12 cartes
 const MEM_MIN_MS = 5000;        // en dessous, temps jugé impossible
+const SIMON_MS = 75000;         // durée de la partie
+const SIMON_MAX = 40;           // longueur maximale de la suite
+const SIMON_STEP_MS = 250;      // minimum humainement possible par pression (anti-script)
 const pseudoCacheByUserId = new Map();
 
 // Mémoire : même tirage de cartes pour tout le monde. Le viewer envoie la suite de cartes retournées ; le serveur
@@ -1650,7 +1654,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1660,6 +1664,10 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "simon") {
+    // La suite complète reste secrète : le serveur ne donne à chaque joueur que le début dont il a besoin (une manche à la fois).
+    m.seq = Array.from({ length: SIMON_MAX }, () => Math.floor(Math.random() * 4));
+    m.endsAt = m.ts + SIMON_MS + MG_SLACK_MS;
   } else if (type === "memoire") {
     m.deck = buildMemoryDeck();
     m.hits = new Map();
@@ -1729,6 +1737,7 @@ function publicMiniGame() {
   if (!m) return null;
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
+  else if (m.type === "simon") { out.durationMs = SIMON_MS; }
   else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
   else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
@@ -1791,6 +1800,34 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
       finalizeMiniGame(m).catch(() => {});
     }
     return res.json({ ok: true, total: m.clicks, done: !!m.done });
+  }
+  if (m.type === "simon") {
+    // Le viewer envoie ce qu'il a reproduit ; [] = il démarre. Manche n = suite de n couleurs. Faux = éliminé.
+    if (m.results) return res.json({ ok: true, expired: true });
+    if (now < m.ts - 500 || now > m.endsAt) return res.json({ ok: true, expired: true });
+    let e = m.scores.get(payload.user_id);
+    if (!e) {
+      if (m.scores.size >= MG_MAX_USERS) return res.json({ ok: true, reason: "full" });
+      e = { set: new Set(), score: 0, lastTs: 0, dead: false, started: false, roundStart: 0 };
+      m.scores.set(payload.user_id, e);
+    }
+    if (e.dead) return res.json({ ok: true, dead: true, score: e.score });
+    const input = req.body && req.body.input;
+    if (!Array.isArray(input) || input.length > SIMON_MAX + 1 || !input.every((x) => Number.isInteger(x) && x >= 0 && x < 4)) return res.json({ ok: true, reason: "invalid", score: e.score, seq: e.started ? m.seq.slice(0, e.score + 1) : undefined });
+    if (input.length === 0) { // démarrage (ou reprise après une coupure réseau) : on renvoie la suite de la manche en cours
+      if (!e.started) { e.started = true; e.roundStart = now; }
+      return res.json({ ok: true, score: e.score, seq: m.seq.slice(0, e.score + 1) });
+    }
+    const need = e.score + 1;
+    if (input.length !== need) return res.json({ ok: true, reason: "invalid", score: e.score, seq: m.seq.slice(0, need) });
+    if (now - e.roundStart < need * SIMON_STEP_MS) return res.json({ ok: true, reason: "too_fast", score: e.score, seq: m.seq.slice(0, need) });
+    if (input.every((x, i) => x === m.seq[i])) {
+      e.score++; e.lastTs = now; e.roundStart = now;
+      if (e.score >= SIMON_MAX) { e.dead = true; return res.json({ ok: true, correct: true, score: e.score, finished: true }); }
+      return res.json({ ok: true, correct: true, score: e.score, seq: m.seq.slice(0, e.score + 1) });
+    }
+    e.dead = true;
+    return res.json({ ok: true, correct: false, dead: true, score: e.score });
   }
   if (m.type === "puzzle" || m.type === "memoire") {
     // Le viewer annonce qu'il a fini ; le temps est mesuré par le serveur (pas de temps envoyé par le client).
