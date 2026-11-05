@@ -259,6 +259,8 @@ let state = {
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
   miniGame: null, // mini-jeu en cours { id, type, ts, winner } (ex. bouteille de pastis au n°51)
+  miniPoints: {}, // points cumulés aux mini-jeux de la partie : { userId: { userId, pseudo, pts, firsts, lastTs } }
+  miniBonus: null, // { pseudo, points } : meilleur joueur des mini-jeux de la partie précédente => carton bonus pour CETTE partie
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
 };
 
@@ -497,11 +499,37 @@ function gamePhase() {
   return "lobby";
 }
 
+// ---------- Carton bonus gagné aux mini-jeux ----------
+// Chaque mini-jeu rapporte des points à ses 3 premiers (3 / 2 / 1). À la fin de la partie ("Nouvelle partie"), le
+// joueur qui a le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante.
+// Un abonné champion reçoit un 3e carton (en plus de son carton bonus abonné).
+const MINI_POINTS = [3, 2, 1];
+function awardMiniPoints(entries) {
+  entries.slice(0, 3).forEach((e, i) => {
+    if (!e || !e.userId) return;
+    const cur = state.miniPoints[e.userId] || (state.miniPoints[e.userId] = { userId: e.userId, pseudo: null, pts: 0, firsts: 0, lastTs: 0 });
+    if (e.pseudo && e.pseudo !== "Un viewer") cur.pseudo = e.pseudo;
+    cur.pts += MINI_POINTS[i];
+    if (i === 0) cur.firsts++;
+    cur.lastTs = Date.now();
+  });
+}
+function miniRanking() {
+  return Object.values(state.miniPoints).sort((a, b) => b.pts - a.pts || b.firsts - a.firsts || a.lastTs - b.lastTs);
+}
+function hasMiniBonus(pseudo) {
+  return !!(state.miniBonus && state.miniBonus.pseudo && String(pseudo).toLowerCase() === state.miniBonus.pseudo.toLowerCase());
+}
+function playerHasBonusCard(p) { return !!(p && (p.isSub || p.hasBonus)); }
+// 3e carton : un abonné qui est aussi champion des mini-jeux garde son carton bonus abonné ET reçoit un carton mini-jeux.
+function playerHasMiniCard(p) { return !!(p && p.isSub && p.hasBonus); }
+
 function computeEntrants() {
   const entrants = [];
   for (const p of state.players) {
     entrants.push({ pseudo: p.pseudo, cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) });
-    if (p.isSub) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
+    if (playerHasBonusCard(p)) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
+    if (playerHasMiniCard(p)) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#mini#" + state.gameId) });
   }
   return entrants;
 }
@@ -512,7 +540,8 @@ function computeFullStandings(drawnSet) {
   const bestByPseudo = new Map();
   for (const p of state.players) {
     const cards = [{ cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) }];
-    if (p.isSub) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
+    if (playerHasBonusCard(p)) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
+    if (playerHasMiniCard(p)) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#mini#" + state.gameId) });
     for (const c of cards) {
       const status = columnStatus(c.grid, drawnSet);
       const marked = c.grid.flat().filter((v) => drawnSet.has(v)).length;
@@ -626,7 +655,7 @@ function registerPlayerInternal(pseudo, isSub) {
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
   if (!registrationIsOpen()) return { ok: false, reason: "closed" };
   if (!state.players.some((p) => p.pseudo === pseudo)) {
-    state.players.push({ pseudo, isSub: !!isSub });
+    state.players.push({ pseudo, isSub: !!isSub, hasBonus: hasMiniBonus(pseudo) });
   }
   return { ok: true };
 }
@@ -935,7 +964,7 @@ app.get("/reglement", (req, res) => {
   <p>La participation est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement.</p>
 
   <h2>Article 3 — Modalités du jeu</h2>
-  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les mini-jeux gratuits (jeux d'adresse déclenchés par certains numéros, sans aucun effet sur le tirage des numéros) rapportent des points à leurs trois premiers ; à la fin de la partie, le joueur ayant le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
 
   <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
@@ -977,7 +1006,9 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   state.panDrops = state.panDrops.filter((p) => now - p.ts < 10000);
   res.json({
     drawn: state.drawn,
-    players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub })),
+    players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus })),
+    miniBonus: state.miniBonus,
+    miniLeaders: miniRanking().filter((e) => e.pseudo).slice(0, 3).map((e) => ({ pseudo: e.pseudo, pts: e.pts })),
     gamePhase: gamePhase(),
     registrationOpen: registrationIsOpen(),
     registrationEndsAt: state.registrationEndsAt,
@@ -1018,10 +1049,11 @@ app.get("/card/:pseudo", rateLimit("card", 600, 60000), (req, res) => {
     return res.json({ registered: false, unlockedFrames, availableBadges, availableTitles, displayChoice });
   }
   const grid = generateCard(pseudo + "#" + state.gameId);
-  const bonusGrid = player.isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
+  const bonusGrid = playerHasBonusCard(player) ? generateCard(pseudo + "#sub#" + state.gameId) : null;
+  const miniGrid = playerHasMiniCard(player) ? generateCard(pseudo + "#mini#" + state.gameId) : null;
   const drawnSet = new Set(state.drawn);
   const myStanding = getStandingFor(pseudo, drawnSet);
-  res.json({ registered: true, grid, bonusGrid, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
+  res.json({ registered: true, grid, bonusGrid, miniGrid, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
 });
 
 app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res) => {
@@ -1408,8 +1440,9 @@ app.post("/register-by-identity", rateLimit("register", 30, 60000), async (req, 
     if (!result.ok) return res.status(403).json({ error: "inscriptions fermées pour cette partie" });
 
     const grid = generateCard(pseudo + "#" + state.gameId);
-    const bonusGrid = isSub ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-    res.json({ ok: true, pseudo, isSub, grid, bonusGrid });
+    const bonusGrid = (isSub || hasMiniBonus(pseudo)) ? generateCard(pseudo + "#sub#" + state.gameId) : null;
+    const miniGrid = (isSub && hasMiniBonus(pseudo)) ? generateCard(pseudo + "#mini#" + state.gameId) : null;
+    res.json({ ok: true, pseudo, isSub, grid, bonusGrid, miniGrid });
   } catch (e) {
     res.status(500).json({ error: "erreur serveur" });
   }
@@ -1453,7 +1486,8 @@ app.post("/drop-ball", rateLimit("drop", 90, 60000), (req, res) => {
 
   const drawnSet = new Set(state.drawn);
   const cardsToCheck = [generateCard(pseudo + "#" + state.gameId)];
-  if (player.isSub) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
+  if (playerHasBonusCard(player)) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
+  if (playerHasMiniCard(player)) cardsToCheck.push(generateCard(pseudo + "#mini#" + state.gameId));
 
   let eligible = false;
   for (const grid of cardsToCheck) {
@@ -1509,8 +1543,15 @@ app.post("/draw", (req, res) => {
   res.json({ drawn: n });
 });
 
-app.post("/reset", (req, res) => {
+app.post("/reset", async (req, res) => {
   if (!checkAdmin(req, res)) return;
+  // Meilleur joueur des mini-jeux de la partie qui se termine => carton bonus pour la partie qui commence.
+  let nextMiniBonus = null;
+  const best = miniRanking()[0];
+  if (best && best.pts > 0) {
+    const bp = best.pseudo || (await pseudoForUserId(best.userId));
+    if (bp) nextMiniBonus = { pseudo: bp, points: best.pts };
+  }
   // La partie qui se termine avait un gagnant : on le retient avant d'effacer l'état.
   // (Pas de gagnant, par exemple partie abandonnée : on garde le précédent.)
   if (state.winner && state.winner.pseudo) {
@@ -1528,8 +1569,8 @@ app.post("/reset", (req, res) => {
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, panDrops: [], registrationEndsAt: regEnd };
-  res.json({ ok: true });
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, miniPoints: {}, miniBonus: nextMiniBonus, panDrops: [], registrationEndsAt: regEnd };
+  res.json({ ok: true, miniBonus: nextMiniBonus });
 });
 
 // ---------- Mini-jeux ----------
@@ -1702,7 +1743,7 @@ async function finalizeMiniGame(m) {
     m.finalizing = true;
     const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => a.ms - b.ms).slice(0, 3);
     const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
-    if (state.miniGame === m) m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size };
+    if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
   if (m.type === "canard") {
@@ -1710,7 +1751,7 @@ async function finalizeMiniGame(m) {
     m.finalizing = true;
     const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => a.ms - b.ms).slice(0, 3);
     const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
-    if (state.miniGame === m) m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size };
+    if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
   if (m.type === "pinata") {
@@ -1720,16 +1761,17 @@ async function finalizeMiniGame(m) {
     const mvp = [];
     const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
     top.forEach((r, i) => mvp.push({ pseudo: pseudos[i] || "Un viewer", count: r.n }));
-    if (state.miniGame === m) m.results = { success: m.clicks >= m.target, total: m.clicks, target: m.target, top: mvp };
+    if (state.miniGame === m) { m.results = { success: m.clicks >= m.target, total: m.clicks, target: m.target, top: mvp }; if (m.clicks >= m.target) awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
   const top = mgRanking(m).slice(0, 3);
-  const results = [];
+  const results = [], awards = [];
   for (const r of top) {
     const pseudo = await pseudoForUserId(r.userId);
     results.push({ pseudo: pseudo || "Un viewer", count: r.count });
+    awards.push({ userId: r.userId, pseudo });
   }
-  if (state.miniGame === m) m.results = results;
+  if (state.miniGame === m) { m.results = results; awardMiniPoints(awards); }
 }
 
 function publicMiniGame() {
@@ -1995,6 +2037,7 @@ function gameSnapshot() {
     drawn: state.drawn, players: state.players, tierWinners: state.tierWinners, winner: state.winner,
     pendingFinalists: state.pendingFinalists, pendingFinalistsDrawCount: state.pendingFinalistsDrawCount,
     started: state.started, gameId: state.gameId, registrationEndsAt: state.registrationEndsAt,
+    miniPoints: state.miniPoints, miniBonus: state.miniBonus,
   };
 }
 function restoreGameSnapshot(v) {
@@ -2002,7 +2045,9 @@ function restoreGameSnapshot(v) {
   state = {
     ...state,
     drawn: v.drawn.filter((n) => Number.isInteger(n)),
-    players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub })),
+    players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub, hasBonus: !!p.hasBonus })),
+    miniPoints: v.miniPoints && typeof v.miniPoints === "object" ? v.miniPoints : {},
+    miniBonus: v.miniBonus && typeof v.miniBonus.pseudo === "string" ? v.miniBonus : null,
     tierWinners: v.tierWinners && typeof v.tierWinners === "object" ? v.tierWinners : { 1: null, 2: null, 3: null },
     winner: v.winner || null,
     pendingFinalists: Array.isArray(v.pendingFinalists) ? v.pendingFinalists : [],
