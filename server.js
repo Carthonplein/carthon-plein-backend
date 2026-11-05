@@ -1557,7 +1557,7 @@ const MG_MAX_USERS = 3000;
 const PINATA_MS = 20000;            // durée pour casser la piñata
 const PINATA_CLICKS_PER_PLAYER = 20; // objectif = inscrits x 20 coups...
 const PINATA_MIN = 80, PINATA_MAX = 1500; // ...borné entre 80 et 1500
-const PINATA_MAX_CPS = 10;          // cadence humaine maximale acceptée : 10 coups / s / viewer
+const PINATA_MAX_CPS = 12;          // cadence maximale acceptée côté serveur : 12 coups / s / viewer (le client en envoie 10 max)
 const pseudoCacheByUserId = new Map();
 
 // o = départ (ms après le début), d = durée de traversée, v = points, y = hauteur (%), r = sens
@@ -1594,6 +1594,7 @@ function startMiniGame(type) {
     m.target = Math.max(PINATA_MIN, Math.min(PINATA_MAX, state.players.length * PINATA_CLICKS_PER_PLAYER));
     m.clicks = 0;
     m.users = new Map(); // userId -> { n, last }
+    m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
   } else {
     m.endsAt = mgEndsAt(m);
@@ -1616,7 +1617,8 @@ async function finalizeMiniGame(m) {
     m.finalizing = true;
     const top = [...m.users.entries()].map(([userId, u]) => ({ userId, n: u.n })).sort((a, b) => b.n - a.n).slice(0, 3);
     const mvp = [];
-    for (const r of top) mvp.push({ pseudo: (await pseudoForUserId(r.userId)) || "Un viewer", count: r.n });
+    const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
+    top.forEach((r, i) => mvp.push({ pseudo: pseudos[i] || "Un viewer", count: r.n }));
     if (state.miniGame === m) m.results = { success: m.clicks >= m.target, total: m.clicks, target: m.target, top: mvp };
     return;
   }
@@ -1633,7 +1635,7 @@ function publicMiniGame() {
   const m = state.miniGame;
   if (!m) return null;
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
-  if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; }
+  if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
   else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
   return out;
 }
@@ -1660,7 +1662,7 @@ async function pseudoForUserId(userId) {
 // Un viewer envoie la liste des bouteilles qu'il a éclatées (numéros de bouteille). Il faut avoir
 // partagé son identité Twitch (le jeton le prouve). Seules comptent les bouteilles qui existaient
 // vraiment à cet instant, une seule fois chacune.
-app.post("/minigame-hit", rateLimit("minigame", 90, 60000), (req, res) => {
+app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
   const authHeader = req.headers["authorization"] || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const payload = verifyTwitchExtensionToken(token);
@@ -1672,7 +1674,7 @@ app.post("/minigame-hit", rateLimit("minigame", 90, 60000), (req, res) => {
   if (m.type === "pinata") {
     // Piñata : le viewer envoie "n coups depuis le dernier envoi". On borne n par la cadence humaine
     // (10 coups/s) pour qu'un script ne fasse pas exploser la piñata à lui tout seul.
-    if (m.results || m.finalizing) return res.json({ ok: true, total: m.clicks, reason: "done" });
+    if (m.done || m.results) return res.json({ ok: true, total: m.clicks, done: true, reason: "done" });
     if (now < m.ts - MG_SLACK_MS || now > m.ts + PINATA_MS + MG_SLACK_MS) return res.json({ ok: true, total: m.clicks, reason: "expired" });
     let u = m.users.get(payload.user_id);
     if (!u) {
@@ -1686,8 +1688,13 @@ app.post("/minigame-hit", rateLimit("minigame", 90, 60000), (req, res) => {
     const add = Number.isFinite(n) && n > 0 ? Math.min(n, allowed, 100) : 0;
     u.last = Math.max(u.last, now);
     u.n += add; m.clicks += add;
-    if (m.clicks >= m.target) finalizeMiniGame(m).catch(() => {});
-    return res.json({ ok: true, total: m.clicks });
+    if (m.clicks >= m.target) {
+      // Objectif atteint : on l'annonce IMMÉDIATEMENT (drapeau "done" publié dans /state et renvoyé
+      // à ce viewer) ; les pseudos des meilleurs frappeurs sont cherchés ensuite, sans retarder l'explosion.
+      m.done = true;
+      finalizeMiniGame(m).catch(() => {});
+    }
+    return res.json({ ok: true, total: m.clicks, done: !!m.done });
   }
   const list = Array.isArray(req.body.bottles) ? req.body.bottles.slice(0, 80) : [];
   let entry = m.scores.get(payload.user_id);
