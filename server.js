@@ -1008,7 +1008,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus })),
     miniBonus: state.miniBonus,
-    miniLeaders: miniRanking().filter((e) => e.pseudo).slice(0, 3).map((e) => ({ pseudo: e.pseudo, pts: e.pts })),
+    miniLeaders: miniRanking().filter((e) => e.pseudo).slice(0, 10).map((e) => ({ pseudo: e.pseudo, pts: e.pts })),
     gamePhase: gamePhase(),
     registrationOpen: registrationIsOpen(),
     registrationEndsAt: state.registrationEndsAt,
