@@ -1538,6 +1538,7 @@ app.post("/reset", (req, res) => {
 //   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
 //   69 : le canard fou : il file très vite dans tous les sens ; chacun essaie de le toucher, classement au temps mis
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
+//   33 : mémoire de thons : 12 cartes (6 paires) à retrouver le plus vite possible, classement au temps
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1545,7 +1546,7 @@ app.post("/reset", (req, res) => {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle" };
+const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire" };
 const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
@@ -1559,7 +1560,29 @@ const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par l
 const PUZZLE_MS = 60000;         // temps maximum pour finir le puzzle : au bout d'1 minute la partie s'arrête pour tout le monde
 const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20 pièces à placer) et refusé
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
+const MEM_PAIRS = 6;            // mémoire : 6 paires = 12 cartes
+const MEM_MIN_MS = 5000;        // en dessous, temps jugé impossible
 const pseudoCacheByUserId = new Map();
+
+// Mémoire : même tirage de cartes pour tout le monde. Le viewer envoie la suite de cartes retournées ; le serveur
+// rejoue la partie (paires, cartes déjà trouvées) pour vérifier que toutes les paires ont bien été trouvées.
+function buildMemoryDeck() {
+  const d = [];
+  for (let i = 0; i < MEM_PAIRS; i++) d.push(i, i);
+  for (let i = d.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [d[i], d[j]] = [d[j], d[i]]; }
+  return d;
+}
+function memoryValid(m, flips) {
+  const n = m.deck.length;
+  if (!Array.isArray(flips) || flips.length < n || flips.length > 300 || flips.length % 2 !== 0) return false;
+  const found = new Set();
+  for (let i = 0; i < flips.length; i += 2) {
+    const a = flips[i], b = flips[i + 1];
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a === b || a < 0 || b < 0 || a >= n || b >= n || found.has(a) || found.has(b)) return false;
+    if (m.deck[a] === m.deck[b]) { found.add(a); found.add(b); }
+  }
+  return found.size === n;
+}
 
 // Trajectoire du canard : suite de points [décalage ms, x %, y %] reliés en ligne droite, vitesse 50 à 85 % de
 // largeur d'écran par seconde, changement de direction toutes les ~0,4 à 0,9 s. Le serveur la publie, ce qui
@@ -1627,7 +1650,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" || type === "canard" || type === "puzzle" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1637,6 +1660,10 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "memoire") {
+    m.deck = buildMemoryDeck();
+    m.hits = new Map();
+    m.endsAt = m.ts + PUZZLE_MS + MG_SLACK_MS;
   } else if (type === "puzzle") {
     m.hits = new Map(); // userId -> temps mis (ms, mesuré par le serveur depuis le départ)
     m.endsAt = m.ts + PUZZLE_MS + MG_SLACK_MS;
@@ -1662,7 +1689,7 @@ function mgRanking(m) {
 
 async function finalizeMiniGame(m) {
   if (m.results || state.miniGame !== m) return;
-  if (m.type === "puzzle") {
+  if (m.type === "puzzle" || m.type === "memoire") {
     if (m.finalizing) return;
     m.finalizing = true;
     const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => a.ms - b.ms).slice(0, 3);
@@ -1703,6 +1730,7 @@ function publicMiniGame() {
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
   else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
+  else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
   else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
   return out;
@@ -1764,13 +1792,16 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
     }
     return res.json({ ok: true, total: m.clicks, done: !!m.done });
   }
-  if (m.type === "puzzle") {
+  if (m.type === "puzzle" || m.type === "memoire") {
     // Le viewer annonce qu'il a fini ; le temps est mesuré par le serveur (pas de temps envoyé par le client).
     if (m.results) return res.json({ ok: true, done: false, reason: "expired" });
     if (m.hits.has(payload.user_id)) return res.json({ ok: true, done: true, already: true, ms: m.hits.get(payload.user_id) });
     if (now > m.endsAt) return res.json({ ok: true, done: false, reason: "expired" });
     const ms = now - m.ts;
-    if (ms < PUZZLE_MIN_MS) return res.json({ ok: true, done: false, reason: "too_fast" });
+    if (m.type === "memoire") {
+      if (ms < MEM_MIN_MS) return res.json({ ok: true, done: false, reason: "too_fast" });
+      if (!memoryValid(m, req.body && req.body.flips)) return res.json({ ok: true, done: false, reason: "invalid" });
+    } else if (ms < PUZZLE_MIN_MS) return res.json({ ok: true, done: false, reason: "too_fast" });
     if (m.hits.size >= MG_MAX_USERS) return res.json({ ok: true, done: false, reason: "full" });
     m.hits.set(payload.user_id, ms);
     if (m.hits.size === 1) { // premier arrivé : plus que 30 s pour les autres
