@@ -1534,7 +1534,7 @@ app.post("/reset", (req, res) => {
 
 // ---------- Mini-jeux ----------
 // Numéro tiré -> mini-jeu :
-//   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point)
+//   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point) ; piège : toucher une bouteille de cola élimine le joueur (son score reste figé)
 //   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
 //   69 : le canard fou : il file très vite dans tous les sens ; chacun essaie de le toucher, classement au temps mis
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
@@ -1610,7 +1610,9 @@ function buildMiniGameItems(type) {
     // pendant ~26 s => environ 85 bouteilles. Il faut vraiment être rapide pour se démarquer.
     let off = 0;
     while (off < 26000) {
-      items.push({ t: "bouteille", v: 1, o: off, d: 1700 + Math.floor(Math.random() * 600) });
+      // ~1 bouteille sur 6 (jamais au tout début) est une bouteille de cola : piège, la toucher élimine le joueur
+      const coca = off > 2000 && Math.random() < 0.16;
+      items.push({ t: coca ? "coca" : "bouteille", v: coca ? 0 : 1, o: off, d: 1700 + Math.floor(Math.random() * 600) });
       off += 220 + Math.floor(Math.random() * 160);
     }
   }
@@ -1808,15 +1810,17 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
   let entry = m.scores.get(payload.user_id);
   if (!entry) {
     if (m.scores.size >= MG_MAX_USERS) return res.json({ ok: true, score: 0, reason: "full" });
-    entry = { set: new Set(), score: 0, lastTs: 0 };
+    entry = { set: new Set(), score: 0, lastTs: 0, dead: false };
     m.scores.set(payload.user_id, entry);
   }
   for (const k of list) {
+    if (entry.dead) break; // éliminé par une bouteille de cola : plus rien ne compte pour lui
     if (!Number.isInteger(k) || k < 0 || k >= m.items.length || entry.set.has(k)) continue;
     const it = m.items[k];
     const start = mgItemStart(m, k);
     if (now < start - MG_SLACK_MS || now > start + it.d + MG_SLACK_MS) continue;
     entry.set.add(k);
+    if (it.t === "coca") { entry.dead = true; continue; }
     entry.score += it.v;
     entry.lastTs = now;
   }
