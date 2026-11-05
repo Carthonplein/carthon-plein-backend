@@ -1540,30 +1540,104 @@ app.post("/trigger-duck", (req, res) => {
 
 
 // ---------- Mini-jeux ----------
-// Numéro tiré -> mini-jeu. Pour l'instant : le 51 fait tomber une bouteille de
-// pastis que les viewers doivent éclater à la souris ; le premier dont le clic
-// arrive au serveur gagne et son nom s'affiche pour tout le monde.
-const MINIGAME_BY_NUMBER = { 51: "pastis" };
-const MINIGAME_WINDOW_MS = 18000; // le serveur accepte les clics pendant 18 s (la chute dure ~9 s à l'écran)
+// Numéro tiré -> mini-jeu :
+//   51 : pluie de bouteilles de pastis (chaque bouteille éclatée = 1 point)
+//   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
+//   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
+//        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
+// Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
+// qu'il peut ; le plus de points gagne (égalité : le premier arrivé à ce score). Le serveur tire
+// lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
+// vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
+// qu'on puisse tricher en envoyant un score inventé.
+const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata" };
+const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
+const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
+const MG_MAX_USERS = 3000;
+const PINATA_MS = 20000;            // durée pour casser la piñata
+const PINATA_CLICKS_PER_PLAYER = 20; // objectif = inscrits x 20 coups...
+const PINATA_MIN = 80, PINATA_MAX = 1500; // ...borné entre 80 et 1500
+const PINATA_MAX_CPS = 10;          // cadence humaine maximale acceptée : 10 coups / s / viewer
 const pseudoCacheByUserId = new Map();
 
+// o = départ (ms après le début), d = durée de traversée, v = points, y = hauteur (%), r = sens
+function buildMiniGameItems(type) {
+  const items = [];
+  if (type === "peche") {
+    let off = 0;
+    while (off < 26000) {
+      const r = Math.random();
+      const kind = r < 0.12 ? "requin" : r < 0.20 ? "dore" : r < 0.38 ? "rouge" : "thon";
+      const spec = { requin: [-3, 4800], dore: [5, 2800], rouge: [2, 4000], thon: [1, 5000] }[kind];
+      items.push({ t: kind, v: spec[0], o: off, d: spec[1], y: Math.round(16 + Math.random() * 68), r: Math.random() < 0.5 ? 1 : -1 });
+      off += 300 + Math.floor(Math.random() * 160);
+    }
+  } else {
+    for (let k = 0; k < 44; k++) items.push({ t: "bouteille", v: 1, o: k * 450, d: 2800 });
+  }
+  return items;
+}
+
+function mgItemStart(m, k) { return m.ts + m.items[k].o; }
+function mgEndsAt(m) { return m.ts + Math.max(...m.items.map((it) => it.o + it.d)) + MG_SLACK_MS; }
+
 function startMiniGame(type) {
-  state.miniGame = {
+  const m = {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
-    ts: Date.now(),
-    winner: null,
+    ts: Date.now() + MG_START_DELAY_MS, // heure de départ
+    items: type === "pinata" ? [] : buildMiniGameItems(type),
+    scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
+    results: null,                      // rempli à la fin
   };
+  if (type === "pinata") {
+    m.target = Math.max(PINATA_MIN, Math.min(PINATA_MAX, state.players.length * PINATA_CLICKS_PER_PLAYER));
+    m.clicks = 0;
+    m.users = new Map(); // userId -> { n, last }
+    m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else {
+    m.endsAt = mgEndsAt(m);
+  }
+  state.miniGame = m;
+  setTimeout(() => finalizeMiniGame(m).catch(() => {}), m.endsAt - Date.now() + 800);
 }
+
+function mgRanking(m) {
+  return [...m.scores.entries()]
+    .map(([userId, v]) => ({ userId, count: v.score, lastTs: v.lastTs }))
+    .filter((r) => r.count > 0)
+    .sort((a, b) => b.count - a.count || a.lastTs - b.lastTs);
+}
+
+async function finalizeMiniGame(m) {
+  if (m.results || state.miniGame !== m) return;
+  if (m.type === "pinata") {
+    if (m.finalizing) return;
+    m.finalizing = true;
+    const top = [...m.users.entries()].map(([userId, u]) => ({ userId, n: u.n })).sort((a, b) => b.n - a.n).slice(0, 3);
+    const mvp = [];
+    for (const r of top) mvp.push({ pseudo: (await pseudoForUserId(r.userId)) || "Un viewer", count: r.n });
+    if (state.miniGame === m) m.results = { success: m.clicks >= m.target, total: m.clicks, target: m.target, top: mvp };
+    return;
+  }
+  const top = mgRanking(m).slice(0, 3);
+  const results = [];
+  for (const r of top) {
+    const pseudo = await pseudoForUserId(r.userId);
+    results.push({ pseudo: pseudo || "Un viewer", count: r.count });
+  }
+  if (state.miniGame === m) m.results = results;
+}
+
 function publicMiniGame() {
   const m = state.miniGame;
   if (!m) return null;
-  return {
-    id: m.id, type: m.type, ts: m.ts,
-    windowMs: MINIGAME_WINDOW_MS,
-    winner: m.winner ? { pseudo: m.winner.pseudo, ...getPublicStatus(m.winner.pseudo) } : null,
-  };
+  const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
+  if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; }
+  else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
+  return out;
 }
+
 async function pseudoForUserId(userId) {
   if (pseudoByUserId[userId]) return pseudoByUserId[userId];
   if (pseudoCacheByUserId.has(userId)) return pseudoCacheByUserId.get(userId);
@@ -1583,27 +1657,55 @@ async function pseudoForUserId(userId) {
   } catch (e) { return null; }
 }
 
-// Un viewer a cliqué sur la bouteille. Il faut avoir partagé son identité Twitch
-// (le jeton le prouve). Le premier clic valide gagne ; JavaScript traite les
-// requêtes une par une, donc il ne peut pas y avoir deux gagnants.
-app.post("/minigame-hit", rateLimit("minigame", 30, 60000), async (req, res) => {
+// Un viewer envoie la liste des bouteilles qu'il a éclatées (numéros de bouteille). Il faut avoir
+// partagé son identité Twitch (le jeton le prouve). Seules comptent les bouteilles qui existaient
+// vraiment à cet instant, une seule fois chacune.
+app.post("/minigame-hit", rateLimit("minigame", 90, 60000), (req, res) => {
   const authHeader = req.headers["authorization"] || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const payload = verifyTwitchExtensionToken(token);
   if (!payload) return res.status(401).json({ error: "token invalide" });
-  if (!payload.user_id) return res.json({ ok: true, won: false, reason: "no_identity" });
-  const m0 = state.miniGame;
-  if (!m0 || String(req.body && req.body.id) !== m0.id) return res.json({ ok: true, won: false, reason: "expired" });
-  if (m0.winner) return res.json({ ok: true, won: false, reason: "taken", winner: m0.winner.pseudo });
-  const pseudo = await pseudoForUserId(payload.user_id);
-  if (!pseudo) return res.json({ ok: true, won: false, reason: "no_identity" });
-  // on relit l'état APRÈS l'attente réseau : quelqu'un a pu gagner entre-temps
+  if (!payload.user_id) return res.json({ ok: true, score: 0, reason: "no_identity" });
   const m = state.miniGame;
-  if (!m || m.id !== m0.id) return res.json({ ok: true, won: false, reason: "expired" });
-  if (m.winner) return res.json({ ok: true, won: false, reason: "taken", winner: m.winner.pseudo });
-  if (Date.now() - m.ts > MINIGAME_WINDOW_MS) return res.json({ ok: true, won: false, reason: "expired" });
-  m.winner = { pseudo, ts: Date.now() };
-  res.json({ ok: true, won: true, winner: pseudo });
+  if (!m || String(req.body && req.body.id) !== m.id) return res.json({ ok: true, score: 0, reason: "expired" });
+  const now = Date.now();
+  if (m.type === "pinata") {
+    // Piñata : le viewer envoie "n coups depuis le dernier envoi". On borne n par la cadence humaine
+    // (10 coups/s) pour qu'un script ne fasse pas exploser la piñata à lui tout seul.
+    if (m.results || m.finalizing) return res.json({ ok: true, total: m.clicks, reason: "done" });
+    if (now < m.ts - MG_SLACK_MS || now > m.ts + PINATA_MS + MG_SLACK_MS) return res.json({ ok: true, total: m.clicks, reason: "expired" });
+    let u = m.users.get(payload.user_id);
+    if (!u) {
+      if (m.users.size >= MG_MAX_USERS) return res.json({ ok: true, total: m.clicks, reason: "full" });
+      u = { n: 0, last: m.ts };
+      m.users.set(payload.user_id, u);
+    }
+    const n = Math.floor(Number(req.body && req.body.n));
+    const secs = Math.max(0, Math.min(now - u.last, PINATA_MS + MG_SLACK_MS)) / 1000;
+    const allowed = Math.ceil(secs * PINATA_MAX_CPS) + 3;
+    const add = Number.isFinite(n) && n > 0 ? Math.min(n, allowed, 100) : 0;
+    u.last = Math.max(u.last, now);
+    u.n += add; m.clicks += add;
+    if (m.clicks >= m.target) finalizeMiniGame(m).catch(() => {});
+    return res.json({ ok: true, total: m.clicks });
+  }
+  const list = Array.isArray(req.body.bottles) ? req.body.bottles.slice(0, 80) : [];
+  let entry = m.scores.get(payload.user_id);
+  if (!entry) {
+    if (m.scores.size >= MG_MAX_USERS) return res.json({ ok: true, score: 0, reason: "full" });
+    entry = { set: new Set(), score: 0, lastTs: 0 };
+    m.scores.set(payload.user_id, entry);
+  }
+  for (const k of list) {
+    if (!Number.isInteger(k) || k < 0 || k >= m.items.length || entry.set.has(k)) continue;
+    const it = m.items[k];
+    const start = mgItemStart(m, k);
+    if (now < start - MG_SLACK_MS || now > start + it.d + MG_SLACK_MS) continue;
+    entry.set.add(k);
+    entry.score += it.v;
+    entry.lastTs = now;
+  }
+  res.json({ ok: true, score: entry.score });
 });
 
 app.post("/start-wheel-spin", (req, res) => {
