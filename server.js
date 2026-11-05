@@ -259,7 +259,6 @@ let state = {
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
   miniGame: null, // mini-jeu en cours { id, type, ts, winner } (ex. bouteille de pastis au n°51)
-  duckEvent: null, // { id, ts } — easter egg "canard volant", déclenché manuellement par le streamer
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
 };
 
@@ -995,7 +994,6 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     gameId: state.gameId,
     overlayVisible,
     lockedFrames: SEASONAL_FRAMES_LOCKED,
-    duckEvent: state.duckEvent,
     miniGame: publicMiniGame(),
     panDrops: state.panDrops,
     lastWinner: lastWinner ? { ...lastWinner, ...getPublicStatus(lastWinner.pseudo) } : null,
@@ -1530,30 +1528,15 @@ app.post("/reset", (req, res) => {
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], duckEvent: null, miniGame: null, panDrops: [], registrationEndsAt: regEnd };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, panDrops: [], registrationEndsAt: regEnd };
   res.json({ ok: true });
 });
 
-// Easter egg déclenché manuellement par le streamer/un modérateur (bouton
-// "🦆 Faire voler le canard" dans les contrôles streamer) : fait traverser
-// l'écran à un canard, pour tous les viewers, sans lien avec le tirage des
-// numéros. Comme pour /start-wheel-spin, on se contente de poser un
-// événement avec un id unique — c'est overlay.js (detectDuckEvent) qui
-// détecte le changement d'id au sondage suivant et joue l'animation.
-app.post("/trigger-duck", (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  state.duckEvent = {
-    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    ts: Date.now(),
-  };
-  res.json({ ok: true, duckEvent: state.duckEvent });
-});
-
-
 // ---------- Mini-jeux ----------
 // Numéro tiré -> mini-jeu :
-//   51 : pluie de bouteilles de pastis (chaque bouteille éclatée = 1 point)
+//   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point)
 //   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
+//   69 : le canard fou : il traverse l'écran très vite dans tous les sens ; le premier à cliquer dessus gagne
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1561,7 +1544,7 @@ app.post("/trigger-duck", (req, res) => {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata" };
+const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard" };
 const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
@@ -1569,7 +1552,42 @@ const PINATA_MS = 20000;            // durée pour casser la piñata
 const PINATA_CLICKS_PER_PLAYER = 20; // objectif = inscrits x 20 coups...
 const PINATA_MIN = 80, PINATA_MAX = 1500; // ...borné entre 80 et 1500
 const PINATA_MAX_CPS = 12;          // cadence maximale acceptée côté serveur : 12 coups / s / viewer (le client en envoie 10 max)
+const DUCK_MS = 20000;          // durée de la chasse au canard
+const DUCK_RADIUS = 9;          // rayon de touche (en % de la largeur de l'écran)
+const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
 const pseudoCacheByUserId = new Map();
+
+// Trajectoire du canard : suite de points [décalage ms, x %, y %] reliés en ligne droite, vitesse 50 à 85 % de
+// largeur d'écran par seconde, changement de direction toutes les ~0,4 à 0,9 s. Le serveur la publie, ce qui
+// lui permet de vérifier chaque clic (position réelle du canard à l'instant du clic).
+function buildDuckPath() {
+  const pts = [[0, 20 + Math.random() * 60, 20 + Math.random() * 60]];
+  let t = 0;
+  while (t < DUCK_MS + 2000) {
+    const [, px, py] = pts[pts.length - 1];
+    let nx, ny, dist, tries = 0;
+    do {
+      nx = 6 + Math.random() * 88; ny = 10 + Math.random() * 78;
+      dist = Math.hypot(nx - px, (ny - py) * 9 / 16);
+      tries++;
+    } while (dist < 22 && tries < 20);
+    const speed = 50 + Math.random() * 35;
+    t += Math.max(250, Math.round(dist / speed * 1000));
+    pts.push([t, Math.round(nx * 10) / 10, Math.round(ny * 10) / 10]);
+  }
+  return pts;
+}
+function duckPosAt(path, off) {
+  if (off <= 0) return [path[0][1], path[0][2]];
+  for (let i = 1; i < path.length; i++) {
+    if (off <= path[i][0]) {
+      const a = path[i - 1], b = path[i], f = (off - a[0]) / (b[0] - a[0]);
+      return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+    }
+  }
+  const l = path[path.length - 1];
+  return [l[1], l[2]];
+}
 
 // o = départ (ms après le début), d = durée de traversée, v = points, y = hauteur (%), r = sens
 function buildMiniGameItems(type) {
@@ -1584,7 +1602,13 @@ function buildMiniGameItems(type) {
       off += 300 + Math.floor(Math.random() * 160);
     }
   } else {
-    for (let k = 0; k < 44; k++) items.push({ t: "bouteille", v: 1, o: k * 450, d: 2800 });
+    // Pluie dense et rapide : une bouteille toutes les ~0,3 s (irrégulier), chute de 1,7 à 2,3 s,
+    // pendant ~26 s => environ 85 bouteilles. Il faut vraiment être rapide pour se démarquer.
+    let off = 0;
+    while (off < 26000) {
+      items.push({ t: "bouteille", v: 1, o: off, d: 1700 + Math.floor(Math.random() * 600) });
+      off += 220 + Math.floor(Math.random() * 160);
+    }
   }
   return items;
 }
@@ -1597,7 +1621,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1607,6 +1631,12 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "canard") {
+    m.path = buildDuckPath();
+    m.winnerId = null;
+    m.done = false;
+    m.tries = new Map(); // userId -> heure du dernier essai raté
+    m.endsAt = m.ts + DUCK_MS + MG_SLACK_MS;
   } else {
     m.endsAt = mgEndsAt(m);
   }
@@ -1623,6 +1653,13 @@ function mgRanking(m) {
 
 async function finalizeMiniGame(m) {
   if (m.results || state.miniGame !== m) return;
+  if (m.type === "canard") {
+    if (m.finalizing) return;
+    m.finalizing = true;
+    const pseudo = m.winnerId ? await pseudoForUserId(m.winnerId) : null;
+    if (state.miniGame === m) m.results = { winner: m.winnerId ? (pseudo || "Un viewer") : null };
+    return;
+  }
   if (m.type === "pinata") {
     if (m.finalizing) return;
     m.finalizing = true;
@@ -1647,6 +1684,7 @@ function publicMiniGame() {
   if (!m) return null;
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
+  else if (m.type === "canard") { out.done = !!m.done; out.durationMs = DUCK_MS; if (!m.done && Date.now() < m.endsAt) out.path = m.path; }
   else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
   return out;
 }
@@ -1706,6 +1744,31 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
       finalizeMiniGame(m).catch(() => {});
     }
     return res.json({ ok: true, total: m.clicks, done: !!m.done });
+  }
+  if (m.type === "canard") {
+    // Le viewer annonce où et quand il a cliqué (x, y en % de l'écran, t = heure serveur estimée).
+    if (m.done || m.results) return res.json({ ok: true, hit: false, done: true });
+    if (now < m.ts || now > m.ts + DUCK_MS + MG_SLACK_MS) return res.json({ ok: true, hit: false, reason: "expired" });
+    const last = m.tries.get(payload.user_id) || 0;
+    if (now - last < 120) return res.json({ ok: true, hit: false, reason: "slow_down" });
+    const x = Number(req.body.x), y = Number(req.body.y);
+    let t = Number(req.body.t);
+    if (![x, y, t].every(Number.isFinite)) return res.json({ ok: true, hit: false });
+    t = Math.max(now - DUCK_T_SLACK_MS - 1000, Math.min(now + DUCK_T_SLACK_MS, t));
+    // on accepte si le clic est sur le canard à l'heure annoncée, ou à l'heure serveur (± petite marge réseau)
+    let ok = false;
+    for (const tt of [t, now - 100, now]) {
+      const [cx, cy] = duckPosAt(m.path, tt - m.ts);
+      if (Math.hypot(x - cx, (y - cy) * 9 / 16) <= DUCK_RADIUS) { ok = true; break; }
+    }
+    if (!ok) {
+      if (m.tries.size < MG_MAX_USERS) m.tries.set(payload.user_id, now);
+      return res.json({ ok: true, hit: false });
+    }
+    m.winnerId = payload.user_id; // premier arrivé, premier servi (Node traite un clic à la fois)
+    m.done = true;
+    finalizeMiniGame(m).catch(() => {});
+    return res.json({ ok: true, hit: true, done: true });
   }
   const list = Array.isArray(req.body.bottles) ? req.body.bottles.slice(0, 80) : [];
   let entry = m.scores.get(payload.user_id);
