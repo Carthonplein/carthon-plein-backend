@@ -1625,7 +1625,7 @@ function carReplay(seed, events) {
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
 //   33 : mémoire de thons : 12 cartes (6 paires) à retrouver le plus vite possible, classement au temps
 //   1  : course de voitures : flèches du clavier pour éviter des obstacles de plus en plus rapides ; le plus longtemps sans toucher gagne
-//   75 : Simon : reproduire une suite de couleurs/sons de plus en plus longue ; le plus de manches gagne (égalité : le plus rapide)
+//   75 : Carthon Hero (suite de notes à reproduire) : reproduire une suite de couleurs/sons de plus en plus longue ; le plus de manches gagne (égalité : le plus rapide)
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
