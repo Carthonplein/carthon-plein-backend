@@ -1578,12 +1578,53 @@ app.post("/reset", async (req, res) => {
 });
 
 // ---------- Mini-jeux ----------
+// ===== Moteur de la course de voitures (IDENTIQUE côté client et serveur : le serveur rejoue les touches du joueur) =====
+// Terrain de 100 x 140 unités ; 60 pas par seconde. Obstacles tirés d'un tirage fixe (graine) commun à tous.
+const CAR_W = 100, CAR_H = 140, CAR_TPS = 60, CAR_MAX_TICKS = 3600;
+const CAR_OBST = [{ w: 11, h: 16 }, { w: 22, h: 6 }, { w: 15, h: 28 }, { w: 6, h: 7 }]; // voiture, barrière, camion, cône
+function makeCarSim(seed) {
+  let a = (seed >>> 0) || 1;
+  const rnd = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const s = { t: 0, x: 46, y: 112, cw: 8, ch: 14, obs: [], next: 20, dead: false, rnd };
+  s.step = function (dir) {
+    if (s.dead) return true;
+    const dx = Math.floor(dir / 3) - 1, dy = (dir % 3) - 1;
+    s.x = Math.min(CAR_W - s.cw, Math.max(0, s.x + dx * 1.15));
+    s.y = Math.min(CAR_H - s.ch - 2, Math.max(70, s.y + dy * 0.9));
+    if (s.t >= s.next) {
+      const k = Math.floor(rnd() * 4), o = CAR_OBST[k];
+      s.obs.push({ k, x: rnd() * (CAR_W - o.w), y: -o.h, w: o.w, h: o.h });
+      s.next = s.t + Math.max(14, Math.round((58 - s.t * 0.011) * (0.7 + rnd() * 0.6)));
+    }
+    const v = Math.min(3.2, 0.8 + s.t * 0.0008);
+    for (const o of s.obs) o.y += v;
+    s.obs = s.obs.filter((o) => o.y < CAR_H + 30);
+    for (const o of s.obs) {
+      if (o.x < s.x + s.cw - 1 && o.x + o.w > s.x + 1 && o.y < s.y + s.ch - 1 && o.y + o.h > s.y + 1) { s.dead = true; return true; }
+    }
+    s.t++;
+    return false;
+  };
+  return s;
+}
+// Rejoue une liste d'événements [[tick, code],...] ; renvoie le nombre de pas survécus (CAR_MAX_TICKS = a tout tenu).
+function carReplay(seed, events) {
+  const s = makeCarSim(seed); let i = 0, dir = 4;
+  while (s.t < CAR_MAX_TICKS) {
+    while (i < events.length && events[i][0] <= s.t) { dir = events[i][1]; i++; }
+    if (s.step(dir)) return s.t;
+  }
+  return CAR_MAX_TICKS;
+}
+// ===== fin du moteur =====
+
 // Numéro tiré -> mini-jeu :
 //   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point) ; piège : toucher une bouteille de cola élimine le joueur (son score reste figé)
 //   25 : pêche au thon (thon bleu +1, thon rouge +2, thon doré +5, requin -3)
 //   69 : le canard fou : il file très vite dans tous les sens ; chacun essaie de le toucher, classement au temps mis
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
 //   33 : mémoire de thons : 12 cartes (6 paires) à retrouver le plus vite possible, classement au temps
+//   1  : course de voitures : flèches du clavier pour éviter des obstacles de plus en plus rapides ; le plus longtemps sans toucher gagne
 //   75 : Simon : reproduire une suite de couleurs/sons de plus en plus longue ; le plus de manches gagne (égalité : le plus rapide)
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
@@ -1592,7 +1633,7 @@ app.post("/reset", async (req, res) => {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "simon" };
+const MINIGAME_BY_NUMBER = { 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "simon" };
 const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
@@ -1608,6 +1649,9 @@ const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
 const MEM_PAIRS = 6;            // mémoire : 6 paires = 12 cartes
 const MEM_MIN_MS = 5000;        // en dessous, temps jugé impossible
+const CAR_MS = 60000;           // durée maximale d'une course
+const CAR_START_LIMIT_MS = 8000; // on peut encore prendre le départ jusqu'à 8 s après le signal
+const CAR_MAX_EVENTS = 3000;     // nombre maximal de changements de touche acceptés
 const SIMON_MS = 75000;         // durée de la partie
 const SIMON_MAX = 40;           // longueur maximale de la suite
 const SIMON_STEP_MS = 250;      // minimum humainement possible par pression (anti-script)
@@ -1699,7 +1743,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" || type === "voiture" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1709,6 +1753,10 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "voiture") {
+    m.seed = (Math.floor(Math.random() * 4294967295) + 1) >>> 0; // même parcours d'obstacles pour tout le monde
+    m.hits = new Map(); // userId -> temps tenu (ms), calculé par le serveur en rejouant les touches
+    m.endsAt = m.ts + CAR_MS + CAR_START_LIMIT_MS + MG_SLACK_MS;
   } else if (type === "simon") {
     // La suite complète reste secrète : le serveur ne donne à chaque joueur que le début dont il a besoin (une manche à la fois).
     m.seq = Array.from({ length: SIMON_MAX }, () => Math.floor(Math.random() * 4));
@@ -1750,6 +1798,14 @@ async function finalizeMiniGame(m) {
     if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
+  if (m.type === "voiture") {
+    if (m.finalizing) return;
+    m.finalizing = true;
+    const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => b.ms - a.ms).slice(0, 3); // le plus longtemps d'abord (égalité : le premier arrivé, ordre d'insertion conservé)
+    const pseudos = await Promise.all(top.map((r) => pseudoForUserId(r.userId)));
+    if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
+    return;
+  }
   if (m.type === "canard") {
     if (m.finalizing) return;
     m.finalizing = true;
@@ -1784,6 +1840,7 @@ function publicMiniGame() {
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
   else if (m.type === "simon") { out.durationMs = SIMON_MS; }
+  else if (m.type === "voiture") { out.durationMs = CAR_MS; out.seed = m.seed; }
   else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
   else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
@@ -1874,6 +1931,27 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
     }
     e.dead = true;
     return res.json({ ok: true, correct: false, dead: true, score: e.score });
+  }
+  if (m.type === "voiture") {
+    // Le viewer envoie la liste de ses changements de direction ; le serveur REJOUE la course (même moteur que le client)
+    // et en tire le temps tenu : impossible d'envoyer un faux temps. Une seule course par joueur.
+    if (m.results) return res.json({ ok: true, done: false, reason: "expired" });
+    if (m.hits.has(payload.user_id)) return res.json({ ok: true, done: true, already: true, ms: m.hits.get(payload.user_id) });
+    if (now < m.ts - 500 || now > m.endsAt) return res.json({ ok: true, done: false, reason: "expired" });
+    const ev = req.body && req.body.events;
+    if (!Array.isArray(ev) || ev.length > CAR_MAX_EVENTS) return res.json({ ok: true, done: false, reason: "invalid" });
+    let prev = -1;
+    for (const e of ev) {
+      if (!Array.isArray(e) || e.length !== 2 || !Number.isInteger(e[0]) || !Number.isInteger(e[1]) || e[0] < prev || e[0] < 0 || e[0] > CAR_MAX_TICKS || e[1] < 0 || e[1] > 8) return res.json({ ok: true, done: false, reason: "invalid" });
+      prev = e[0];
+    }
+    const ticks = carReplay(m.seed, ev);
+    const ms = Math.round((ticks * 1000) / CAR_TPS);
+    // On ne peut pas avoir tenu plus longtemps que le temps réellement écoulé depuis le départ de la course.
+    if (ms > now - m.ts + 1500) return res.json({ ok: true, done: false, reason: "too_fast" });
+    if (m.hits.size >= MG_MAX_USERS) return res.json({ ok: true, done: false, reason: "full" });
+    m.hits.set(payload.user_id, ms);
+    return res.json({ ok: true, done: true, ms });
   }
   if (m.type === "puzzle" || m.type === "memoire") {
     // Le viewer annonce qu'il a fini ; le temps est mesuré par le serveur (pas de temps envoyé par le client).
