@@ -1053,7 +1053,10 @@ app.get("/card/:pseudo", rateLimit("card", 600, 60000), (req, res) => {
   const miniGrid = playerHasMiniCard(player) ? generateCard(pseudo + "#mini#" + state.gameId) : null;
   const drawnSet = new Set(state.drawn);
   const myStanding = getStandingFor(pseudo, drawnSet);
-  res.json({ registered: true, grid, bonusGrid, miniGrid, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
+  // Position du viewer au classement des mini-jeux (affichée s'il n'est pas dans le top 3 public).
+  let miniMe = null;
+  { const mr = miniRanking(); const idx = mr.findIndex((e) => e.pseudo && e.pseudo.toLowerCase() === pseudo.toLowerCase()); if (idx >= 0) miniMe = { rank: idx + 1, pts: mr[idx].pts }; }
+  res.json({ registered: true, grid, bonusGrid, miniGrid, miniMe, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
 });
 
 app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res) => {
