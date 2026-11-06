@@ -259,6 +259,7 @@ let state = {
   gameId: newGameId(),
   ballDrops: [], // { id, pseudo, number, ts } — effet visuel "!numero", purgé après quelques secondes
   miniGame: null, // mini-jeu en cours { id, type, ts, winner } (ex. bouteille de pastis au n°51)
+  duckEvent: null, // { id, ts } — easter egg "canard volant" (extension v114 : bouton du streamer), conservé pour compatibilité
   miniPoints: {}, // points cumulés aux mini-jeux de la partie : { userId: { userId, pseudo, pts, firsts, lastTs } }
   miniBonus: null, // { pseudo, points } : meilleur joueur des mini-jeux de la partie précédente => carton bonus pour CETTE partie
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
@@ -1007,6 +1008,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   res.json({
     drawn: state.drawn,
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus })),
+    duckEvent: state.duckEvent,
     miniBonus: state.miniBonus,
     miniLeaders: miniRanking().filter((e) => e.pseudo).slice(0, 10).map((e) => ({ pseudo: e.pseudo, pts: e.pts })),
     gamePhase: gamePhase(),
@@ -1546,6 +1548,17 @@ app.post("/draw", (req, res) => {
   res.json({ drawn: n });
 });
 
+// Easter egg "canard volant" de l'extension v114 (bouton "🦆 Faire voler le canard" du streamer) : route conservée
+// pour que l'ancienne extension continue de fonctionner. La v131 n'utilise plus ce bouton (le canard est un mini-jeu au n°69).
+app.post("/trigger-duck", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  state.duckEvent = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    ts: Date.now(),
+  };
+  res.json({ ok: true, duckEvent: state.duckEvent });
+});
+
 app.post("/reset", async (req, res) => {
   if (!checkAdmin(req, res)) return;
   // Meilleur joueur des mini-jeux de la partie qui se termine => carton bonus pour la partie qui commence.
@@ -1573,7 +1586,7 @@ app.post("/reset", async (req, res) => {
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, miniPoints: {}, miniBonus: nextMiniBonus, panDrops: [], registrationEndsAt: regEnd };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, duckEvent: null, miniPoints: {}, miniBonus: nextMiniBonus, panDrops: [], registrationEndsAt: regEnd };
   res.json({ ok: true, miniBonus: nextMiniBonus });
 });
 
