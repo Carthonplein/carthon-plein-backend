@@ -330,6 +330,7 @@ let winsByPseudo = {};
 const PIONEER_FROM = Date.parse("2026-10-31T23:00:00Z");  // 1er nov. 00h00 Paris
 const PIONEER_UNTIL = Date.parse("2026-11-01T23:00:00Z"); // 2 nov. 00h00 Paris
 let gamesByPseudo = {};
+let miniRecords = {}; // meilleur résultat de tous les temps par mini-jeu : { type: { pseudo, value, ts } }
 
 // Les 5 nouveaux titres (Vétéran, Fashion Victim, Fidèle, Pilier de la chaîne, Pionnier)
 // ne sont connus que des versions récentes de l'extension (v117 et +). Tant que la
@@ -1934,7 +1935,28 @@ function mgRanking(m) {
     .sort((a, b) => b.count - a.count || a.lastTs - b.lastTs);
 }
 
+// Record de chaque mini-jeu : le meilleur résultat individuel de tous les temps, conservé tant qu'il n'est pas battu.
+// Temps bas = meilleur pour canard/puzzle/mémoire ; sinon plus haut = meilleur (temps tenu, bouteilles, points, mots...).
+const MINI_RECORD_LOW = new Set(["canard", "puzzle", "memoire"]);
+function applyMiniRecord(m) {
+  if (m.recordDone || state.miniGame !== m || !m.results) return;
+  m.recordDone = true;
+  const r = m.results;
+  const best = Array.isArray(r) ? r[0] : (r.top && r.top[0]);
+  if (!best) return;
+  const value = best.ms != null ? best.ms : best.count;
+  if (!Number.isFinite(value) || value <= 0 || !best.pseudo || best.pseudo === "Un viewer") return;
+  const low = MINI_RECORD_LOW.has(m.type), cur = miniRecords[m.type];
+  const beaten = !cur || (low ? value < cur.value : value > cur.value);
+  if (beaten) { miniRecords[m.type] = { pseudo: best.pseudo, value, ts: Date.now() }; redisSetJSON("miniRecords", miniRecords); }
+  const rec = miniRecords[m.type];
+  m.record = { pseudo: rec.pseudo, value: rec.value, broken: !!beaten, kind: best.ms != null ? "ms" : "count" };
+}
 async function finalizeMiniGame(m) {
+  await finalizeMiniGameInner(m);
+  try { applyMiniRecord(m); } catch (e) {}
+}
+async function finalizeMiniGameInner(m) {
   if (m.results || state.miniGame !== m) return;
   if (m.type === "puzzle" || m.type === "memoire") {
     if (m.finalizing) return;
@@ -1995,7 +2017,7 @@ async function finalizeMiniGame(m) {
 function publicMiniGame() {
   const m = state.miniGame;
   if (!m) return null;
-  const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
+  const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results, record: m.record || null };
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; out.notes = m.notes; out.fallMs = PINATA_FALL_MS; }
   else if (m.type === "simon") { out.durationMs = SIMON_MS; }
   else if (m.type === "voiture") { out.durationMs = CAR_MS; out.seed = m.seed; }
@@ -2351,6 +2373,7 @@ const PERSISTED = {
   displayChoiceByPseudo: [() => displayChoiceByPseudo, (v) => { displayChoiceByPseudo = v; }, {}],
   winsByPseudo: [() => winsByPseudo, (v) => { winsByPseudo = v; }, {}],
   gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
+  miniRecords: [() => miniRecords, (v) => { miniRecords = v && typeof v === "object" ? v : {}; }, {}],
   pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
   overlayDelayMs: [() => overlayDelayMs, (v) => { overlayDelayMs = (typeof v === "number" && v >= 0 && v <= 20000) ? v : 0; }, 0],
