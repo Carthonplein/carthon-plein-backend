@@ -1753,10 +1753,23 @@ const MINIGAME_BY_NUMBER = { 13: "boss", 1: "voiture", 51: "pastis", 25: "peche"
 const MG_START_DELAY_MS = Math.max(3000, Math.min(30000, parseInt(process.env.MG_START_DELAY_MS, 10) || 14000));
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
-const PINATA_MS = 20000;            // durée pour casser la piñata
-const PINATA_CLICKS_PER_PLAYER = 150; // objectif = inscrits x 150 coups...
-const PINATA_MIN = 150, PINATA_MAX = 30000; // ...borné entre 150 et 30000
-const PINATA_MAX_CPS = 14;          // cadence maximale acceptée côté serveur : 12 coups / s / viewer (le client en envoie 10 max)
+const PINATA_MS = 32000;            // durée du jeu de rythme (la piñata se casse à coups de flèches)
+const PINATA_FALL_MS = 1600;       // temps de chute d'une flèche (affichage client)
+const PINATA_DMG_PER_PLAYER = Number(process.env.PINATA_DMG_PER_PLAYER) > 0 ? Number(process.env.PINATA_DMG_PER_PLAYER) : 25; // objectif = inscrits x 25 points...
+const PINATA_MIN = 60, PINATA_MAX = 30000; // ...borné entre 60 et 30000
+const PINATA_NOTES = 48;           // nombre de flèches dans la partition
+// Partition déterministe : [temps en ms depuis le départ, voie 0..3 (gauche, bas, haut, droite)]. Rythme qui accélère.
+function pinataChart(seed) {
+  const rnd = mulberry32(seed >>> 0), notes = [];
+  let t = 2200, last = -1;
+  for (let i = 0; i < PINATA_NOTES; i++) {
+    let lane = Math.floor(rnd() * 4);
+    if (lane === last && rnd() < 0.6) lane = (lane + 1 + Math.floor(rnd() * 3)) % 4;
+    notes.push([Math.round(t), lane]); last = lane;
+    t += 660 - 280 * (i / PINATA_NOTES) + Math.floor(rnd() * 90);
+  }
+  return notes;
+}
 const DUCK_MS = 20000;          // durée de la chasse au canard
 const DUCK_RADIUS = 6.5;        // rayon de touche (en % de la largeur de l'écran) : petit, le canard est difficile
 const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
@@ -1866,7 +1879,9 @@ function startMiniGame(type) {
     results: null,                      // rempli à la fin
   };
   if (type === "pinata") {
-    m.target = Math.max(PINATA_MIN, Math.min(PINATA_MAX, state.players.length * PINATA_CLICKS_PER_PLAYER));
+    m.target = Math.max(PINATA_MIN, Math.min(PINATA_MAX, state.players.length * PINATA_DMG_PER_PLAYER));
+    m.seed = Math.floor(Math.random() * 2147483647);
+    m.notes = pinataChart(m.seed);
     m.clicks = 0;
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
@@ -1979,7 +1994,7 @@ function publicMiniGame() {
   const m = state.miniGame;
   if (!m) return null;
   const out = { id: m.id, type: m.type, ts: m.ts, endsAt: m.endsAt, results: m.results };
-  if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
+  if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; out.notes = m.notes; out.fallMs = PINATA_FALL_MS; }
   else if (m.type === "simon") { out.durationMs = SIMON_MS; }
   else if (m.type === "voiture") { out.durationMs = CAR_MS; out.seed = m.seed; }
   else if (m.type === "flappy") { out.durationMs = FLAP_MS; out.seed = m.seed; }
@@ -2040,8 +2055,11 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
       m.users.set(payload.user_id, u);
     }
     const n = Math.floor(Number(req.body && req.body.n));
-    const secs = Math.max(0, Math.min(now - u.last, PINATA_MS + MG_SLACK_MS)) / 1000;
-    const allowed = Math.ceil(secs * PINATA_MAX_CPS) + 3;
+    // Plafond : 2 points (Parfait) par flèche déjà tombée à portée (+ marge), jamais plus => un script
+    // qui envoie n'importe quoi ne dépasse pas ce qu'un joueur parfait pourrait marquer.
+    const el = now - m.ts + MG_SLACK_MS;
+    let due = 0; for (const nt of m.notes) if (nt[0] <= el) due++;
+    const allowed = Math.max(0, due * 2 - u.n);
     const add = Number.isFinite(n) && n > 0 ? Math.min(n, allowed, 100) : 0;
     u.last = Math.max(u.last, now);
     u.n += add; m.clicks += add;
