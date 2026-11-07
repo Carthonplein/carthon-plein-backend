@@ -1544,7 +1544,9 @@ app.post("/draw", (req, res) => {
   const n = remaining[Math.floor(Math.random() * remaining.length)];
   state.drawn.push(n);
   refreshTiersAndWinner();
-  if (MINIGAME_BY_NUMBER[n]) startMiniGame(MINIGAME_BY_NUMBER[n]);
+  // Pas de mini-jeu sur le tirage qui termine la partie (Carthon Plein final, ou égalité à départager) : la bannière de victoire
+  // et le classement des mini-jeux doivent s'afficher tout de suite, et le classement des mini-jeux doit être définitif.
+  if (MINIGAME_BY_NUMBER[n] && gamePhase() !== "finished") startMiniGame(MINIGAME_BY_NUMBER[n]);
   res.json({ drawn: n });
 });
 
