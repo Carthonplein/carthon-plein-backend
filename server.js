@@ -1757,7 +1757,7 @@ const PINATA_MS = 32000;            // durée du jeu de rythme (la piñata se ca
 const PINATA_FALL_MS = 1600;       // temps de chute d'une flèche (affichage client)
 const PINATA_DMG_PER_PLAYER = Number(process.env.PINATA_DMG_PER_PLAYER) > 0 ? Number(process.env.PINATA_DMG_PER_PLAYER) : 25; // objectif = inscrits x 25 points...
 const PINATA_MIN = 60, PINATA_MAX = 30000; // ...borné entre 60 et 30000
-const PINATA_NOTES = 48;           // nombre de flèches dans la partition
+const PINATA_NOTES = 56;           // nombre de flèches dans la partition
 // Partition déterministe : [temps en ms depuis le départ, voie 0..3 (gauche, bas, haut, droite)]. Rythme qui accélère.
 function pinataChart(seed) {
   const rnd = mulberry32(seed >>> 0), notes = [];
@@ -1766,7 +1766,8 @@ function pinataChart(seed) {
     let lane = Math.floor(rnd() * 4);
     if (lane === last && rnd() < 0.6) lane = (lane + 1 + Math.floor(rnd() * 3)) % 4;
     notes.push([Math.round(t), lane]); last = lane;
-    t += 660 - 280 * (i / PINATA_NOTES) + Math.floor(rnd() * 90);
+    const k = i / (PINATA_NOTES - 1); // le rythme accélère de plus en plus : ~700 ms entre deux flèches au début, ~240 ms à la fin
+    t += 700 * Math.pow(240 / 700, k) + Math.floor(rnd() * 60 * (1 - k * 0.7));
   }
   return notes;
 }
