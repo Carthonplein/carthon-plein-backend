@@ -1683,6 +1683,7 @@ function flapReplay(seed, flaps) {
 //   1  : course de voitures : flèches du clavier pour éviter des obstacles de plus en plus rapides ; le plus longtemps sans toucher gagne
 //   75 : le poisson qui nage entre les rochers (style Flappy Bird) : flèche haut/clic pour donner un coup de nageoire ; le plus longtemps sans toucher gagne
 //        (l'ancien jeu « Carthon Hero » est retiré du tirage)
+//   13 : boss thon géant, COOPÉRATIF : le chat écrit dans le chat Twitch les mots affichés pour lui enlever de la vie
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1690,7 +1691,60 @@ function flapReplay(seed, flaps) {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "flappy" }; // Carthon Hero (simon) retiré du tirage à la demande du streamer ; le code reste en place
+// ===== Boss thon géant (numéro 13) : le chat doit écrire les mots affichés à l'écran pour lui faire perdre de la vie =====
+// 3 mots sont affichés ; le PREMIER viewer qui écrit l'un d'eux dans le chat Twitch le « capture » : le boss perd 1 point de vie
+// et un nouveau mot prend sa place. Si la vie tombe à 0 avant la fin du temps, le chat gagne (sinon le thon s'échappe).
+// Classement = nombre de mots capturés ; 3/2/1 points mini-jeux seulement si le boss est vaincu.
+const BOSS_MS = 60000;
+const BOSS_SLOTS = 3;
+const BOSS_HP_PER_PLAYER = Math.max(0.5, Math.min(10, parseFloat(process.env.BOSS_HP_PER_PLAYER) || 1.5)); // réglable sur Render
+const BOSS_HP_MIN = 12, BOSS_HP_MAX = 80;
+const BOSS_USER_COOLDOWN_MS = 350; // un même viewer ne peut pas capturer plus de ~3 mots/s
+const BOSS_WORDS = [
+  ["thon", "sushi", "algue", "perle", "ancre", "vague", "plage", "sable", "corail", "crabe", "nage", "banc", "mer"],
+  ["sardine", "anchois", "requin", "dauphin", "baleine", "meduse", "pecheur", "harpon", "filet", "bateau", "pirate", "tresor", "hameçon", "tortue", "bingo", "numéro", "carton", "pastis"],
+  ["aquarium", "crevette", "calamar", "maquereau", "saumon", "poisson", "hippocampe", "loterie", "gagnant", "carthon", "scaphandre", "tempête", "félicitations", "pêcheur"],
+];
+function bossNorm(t) { return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z]/g, ""); }
+function bossPickWord(m) {
+  const p = m.maxHp ? (m.maxHp - m.hp) / m.maxHp : 0;
+  const tier = p < 0.34 ? 0 : p < 0.67 ? 1 : 2;
+  const pool = [...BOSS_WORDS[tier], ...(tier > 0 ? BOSS_WORDS[tier - 1] : [])];
+  const onScreen = new Set(m.words.map((w) => bossNorm(w.w)));
+  let cands = pool.filter((w) => !onScreen.has(bossNorm(w)) && !m.used.has(w));
+  if (cands.length === 0) { m.used.clear(); cands = pool.filter((w) => !onScreen.has(bossNorm(w))); }
+  const w = cands[Math.floor(Math.random() * cands.length)];
+  m.used.add(w);
+  return { id: Math.random().toString(36).slice(2, 7), w };
+}
+// Appelée pour chaque message du chat. Renvoie true si le message a capturé un mot.
+function handleBossChat(userId, pseudo, text) {
+  const m = state.miniGame;
+  if (!m || m.type !== "boss" || m.results || m.done || !userId) return false;
+  const now = Date.now();
+  if (now < m.ts || now > m.endsAt) return false;
+  const norm = bossNorm(text);
+  if (norm.length < 2) return false;
+  const k = m.words.findIndex((w) => bossNorm(w.w) === norm);
+  if (k < 0) return false;
+  const u = m.users.get(userId) || { n: 0, pseudo: pseudo || null, last: 0, firstAt: now };
+  if (now - u.last < BOSS_USER_COOLDOWN_MS) return false;
+  u.n++; u.last = now; if (pseudo) u.pseudo = pseudo; m.users.set(userId, u);
+  const word = m.words[k].w;
+  m.hp = Math.max(0, m.hp - 1);
+  m.feed.push({ pseudo: u.pseudo || "Un viewer", word, ts: now });
+  if (m.feed.length > 5) m.feed.shift();
+  if (m.hp <= 0) {
+    m.done = true; m.doneAt = now; m.words = [];
+    setTimeout(() => finalizeMiniGame(m).catch(() => {}), 2500);
+  } else {
+    m.words[k] = bossPickWord(m);
+  }
+  return true;
+}
+if (process.env.CARTHON_TEST_HOOKS) global.__bossChat = handleBossChat;
+
+const MINIGAME_BY_NUMBER = { 13: "boss", 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "flappy" }; // Carthon Hero (simon) retiré du tirage à la demande du streamer ; le code reste en place
 // Compte à rebours entre le tirage du numéro et le départ du mini-jeu. La vidéo Twitch arrive chez les viewers avec quelques
 // secondes de retard (≈ 5 s) : leur overlay montre le numéro en retard, et le mini-jeu ne doit pas démarrer avant. 14 s laissent
 // le temps de voir le numéro tomber et d'entendre l'annonce (retard vidéo jusqu'à ~9 s). Réglable avec la variable Render MG_START_DELAY_MS.
@@ -1805,7 +1859,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" || type === "voiture" || type === "flappy" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" || type === "voiture" || type === "flappy" || type === "boss" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1815,6 +1869,13 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "boss") {
+    m.maxHp = Math.max(BOSS_HP_MIN, Math.min(BOSS_HP_MAX, Math.round(state.players.length * BOSS_HP_PER_PLAYER)));
+    m.hp = m.maxHp;
+    m.users = new Map(); // userId -> { n, pseudo, last, firstAt }
+    m.used = new Set(); m.words = []; m.feed = []; m.done = false;
+    for (let i = 0; i < BOSS_SLOTS; i++) m.words.push(bossPickWord(m));
+    m.endsAt = m.ts + BOSS_MS + MG_SLACK_MS;
   } else if (type === "flappy") {
     m.seed = (Math.floor(Math.random() * 4294967295) + 1) >>> 0;
     m.hits = new Map(); // userId -> temps tenu (ms), calculé par le serveur en rejouant les battements
@@ -1864,6 +1925,18 @@ async function finalizeMiniGame(m) {
     if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
+  if (m.type === "boss") {
+    if (m.finalizing) return;
+    m.finalizing = true;
+    const success = m.hp <= 0;
+    const ranked = [...m.users.entries()].map(([userId, u]) => ({ userId, n: u.n, pseudo: u.pseudo, firstAt: u.firstAt })).sort((a, b) => b.n - a.n || a.firstAt - b.firstAt);
+    const top = ranked.slice(0, 3);
+    if (state.miniGame === m) {
+      m.results = { success, hp: m.hp, maxHp: m.maxHp, words: ranked.reduce((a, r) => a + r.n, 0), top: top.map((r) => ({ pseudo: r.pseudo || "Un viewer", count: r.n })), players: ranked.length };
+      if (success) awardMiniPoints(top.map((r) => ({ userId: r.userId, pseudo: r.pseudo })));
+    }
+    return;
+  }
   if (m.type === "voiture" || m.type === "flappy") {
     if (m.finalizing) return;
     m.finalizing = true;
@@ -1908,6 +1981,12 @@ function publicMiniGame() {
   else if (m.type === "simon") { out.durationMs = SIMON_MS; }
   else if (m.type === "voiture") { out.durationMs = CAR_MS; out.seed = m.seed; }
   else if (m.type === "flappy") { out.durationMs = FLAP_MS; out.seed = m.seed; }
+  else if (m.type === "boss") {
+    out.durationMs = BOSS_MS; out.hp = m.hp; out.maxHp = m.maxHp; out.done = !!m.done; out.chatOk = chatBotConnected;
+    out.words = Date.now() >= m.ts && !m.done && !m.results ? m.words.map((w) => ({ id: w.id, w: w.w })) : []; // les mots ne sont publiés qu'au départ
+    out.feed = m.feed.slice(-4);
+    out.top = [...m.users.values()].sort((a, b) => b.n - a.n || a.firstAt - b.firstAt).slice(0, 3).map((u) => ({ pseudo: u.pseudo || "Un viewer", count: u.n }));
+  }
   else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
   else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
@@ -1946,6 +2025,7 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
   const m = state.miniGame;
   if (!m || String(req.body && req.body.id) !== m.id) return res.json({ ok: true, score: 0, reason: "expired" });
   const now = Date.now();
+  if (m.type === "boss") return res.json({ ok: true, score: 0, reason: "chat_only" }); // ce jeu se joue dans le chat Twitch
   if (m.type === "pinata") {
     // Piñata : le viewer envoie "n coups depuis le dernier envoi". On borne n par la cadence humaine
     // (10 coups/s) pour qu'un script ne fasse pas exploser la piñata à lui tout seul.
@@ -2144,6 +2224,7 @@ app.post("/start-wheel-spin", (req, res) => {
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
 const CHANNEL_NAME = process.env.CHANNEL_NAME;
+let chatBotConnected = false;
 
 if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   const client = new tmi.Client({
@@ -2154,11 +2235,17 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   client.connect().catch((err) => console.log("Erreur de connexion au chat :", err));
 
   client.on("connected", () => {
+    chatBotConnected = true;
     console.log("Bot de chat connecté sur #" + CHANNEL_NAME);
   });
+  client.on("disconnected", () => { chatBotConnected = false; });
 
   client.on("message", (channel, tags, message, self) => {
     if (self) return;
+    // Boss thon géant : chaque message du chat est comparé aux mots affichés à l'écran.
+    if (state.miniGame && state.miniGame.type === "boss") {
+      try { handleBossChat(tags["user-id"], cleanPseudo(tags["display-name"] || tags.username), message); } catch (e) {}
+    }
     const text = message.trim().toLowerCase();
     if (text === "!carthon") {
       const pseudo = cleanPseudo(tags["display-name"] || tags.username);
