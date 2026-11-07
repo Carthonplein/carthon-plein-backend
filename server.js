@@ -1630,6 +1630,49 @@ function carReplay(seed, events) {
   return CAR_MAX_TICKS;
 }
 // ===== fin du moteur =====
+// ===== Moteur du jeu du poisson qui nage entre les rochers (IDENTIQUE côté client et serveur : le serveur rejoue les battements) =====
+const FL_W = 160, FL_H = 100, FL_TPS = 60, FL_MAX_TICKS = 5400;
+function makeFlapSim(seed) {
+  let a = (seed >>> 0) || 1;
+  const rnd = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const s = { t: 0, x: 38, y: 42, vy: -1.5, fw: 9, fh: 6, pipes: [], next: 40, cy: 50, n: 0, passed: 0, dead: false };
+  s.step = function (flap) {
+    if (s.dead) return true;
+    if (flap) s.vy = -1.5;
+    s.vy = Math.min(2.4, s.vy + 0.085);
+    s.y += s.vy;
+    if (s.y < 0) { s.y = 0; s.vy = 0; }
+    if (s.y + s.fh > FL_H - 6) { s.dead = true; return true; } // le fond marin
+    const v = Math.min(1.7, 0.85 + s.t * 0.0003);
+    if (s.t >= s.next) {
+      const gap = Math.max(24, 34 - s.t * 0.002);
+      const lo = gap / 2 + 9, hi = FL_H - 6 - gap / 2 - 9;
+      s.cy = Math.min(hi, Math.max(lo, s.cy + (rnd() - 0.5) * 44));
+      s.pipes.push({ x: FL_W, cy: s.cy, gap, w: 13, k: s.n++ % 3, ok: false });
+      s.next = s.t + Math.round(64 / v);
+    }
+    for (const p of s.pipes) {
+      p.x -= v;
+      if (!p.ok && p.x + p.w < s.x) { p.ok = true; s.passed++; }
+      if (p.x < s.x + s.fw - 1.5 && p.x + p.w > s.x + 1.5 && (s.y + 1 < p.cy - p.gap / 2 || s.y + s.fh - 1 > p.cy + p.gap / 2)) { s.dead = true; return true; }
+    }
+    s.pipes = s.pipes.filter((p) => p.x + p.w > -4);
+    s.t++;
+    return false;
+  };
+  return s;
+}
+// Rejoue une liste de ticks où le joueur a nagé ; renvoie le nombre de pas survécus.
+function flapReplay(seed, flaps) {
+  const s = makeFlapSim(seed); let i = 0;
+  while (s.t < FL_MAX_TICKS) {
+    let f = false;
+    while (i < flaps.length && flaps[i] <= s.t) { if (flaps[i] === s.t) f = true; i++; }
+    if (s.step(f)) return s.t;
+  }
+  return FL_MAX_TICKS;
+}
+// ===== fin du moteur du poisson =====
 
 // Numéro tiré -> mini-jeu :
 //   51 : pluie de bouteilles de pastis (~85 bouteilles rapides, chacune éclatée = 1 point) ; piège : toucher une bouteille de cola élimine le joueur (son score reste figé)
@@ -1638,7 +1681,8 @@ function carReplay(seed, events) {
 //   7  : puzzle du logo (20 pièces) : chacun le reconstitue seul, classement au temps
 //   33 : mémoire de thons : 12 cartes (6 paires) à retrouver le plus vite possible, classement au temps
 //   1  : course de voitures : flèches du clavier pour éviter des obstacles de plus en plus rapides ; le plus longtemps sans toucher gagne
-//   75 : Carthon Hero (suite de notes à reproduire) : reproduire une suite de couleurs/sons de plus en plus longue ; le plus de manches gagne (égalité : le plus rapide)
+//   75 : le poisson qui nage entre les rochers (style Flappy Bird) : flèche haut/clic pour donner un coup de nageoire ; le plus longtemps sans toucher gagne
+//        (l'ancien jeu « Carthon Hero » est retiré du tirage)
 //   40 : piñata géante, COOPÉRATIVE : tout le monde tape dessus ; si le total de coups atteint
 //        l'objectif avant la fin du temps, elle explose pour tous (objectif = nombre d'inscrits x 20)
 // Compte à rebours, puis des objets traversent l'écran pendant ~25 s ; chaque viewer clique ce
@@ -1646,7 +1690,7 @@ function carReplay(seed, events) {
 // lui-même le calendrier des objets (type, valeur, heure, durée) et le publie : il peut donc
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
-const MINIGAME_BY_NUMBER = { 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "simon" };
+const MINIGAME_BY_NUMBER = { 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "flappy" }; // Carthon Hero (simon) retiré du tirage à la demande du streamer ; le code reste en place
 // Compte à rebours entre le tirage du numéro et le départ du mini-jeu. La vidéo Twitch arrive chez les viewers avec quelques
 // secondes de retard (≈ 5 s) : leur overlay montre le numéro en retard, et le mini-jeu ne doit pas démarrer avant. 14 s laissent
 // le temps de voir le numéro tomber et d'entendre l'annonce (retard vidéo jusqu'à ~9 s). Réglable avec la variable Render MG_START_DELAY_MS.
@@ -1665,6 +1709,8 @@ const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
 const MEM_PAIRS = 6;            // mémoire : 6 paires = 12 cartes
 const MEM_MIN_MS = 5000;        // en dessous, temps jugé impossible
+const FLAP_MS = 90000;           // durée maximale du jeu du poisson (nager entre les rochers)
+const FLAP_MAX_EVENTS = 4000;    // nombre maximal de battements acceptés
 const CAR_MS = 90000;           // durée maximale d'une course
 const CAR_START_LIMIT_MS = 8000; // on peut encore prendre le départ jusqu'à 8 s après le signal
 const CAR_MAX_EVENTS = 6000;     // nombre maximal de changements de touche acceptés
@@ -1759,7 +1805,7 @@ function startMiniGame(type) {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
     type,
     ts: Date.now() + MG_START_DELAY_MS, // heure de départ
-    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" || type === "voiture" ? [] : buildMiniGameItems(type),
+    items: type === "pinata" || type === "canard" || type === "puzzle" || type === "memoire" || type === "simon" || type === "voiture" || type === "flappy" ? [] : buildMiniGameItems(type),
     scores: new Map(),                  // userId -> { set: Set(k), score, lastTs }
     results: null,                      // rempli à la fin
   };
@@ -1769,6 +1815,10 @@ function startMiniGame(type) {
     m.users = new Map(); // userId -> { n, last }
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
+  } else if (type === "flappy") {
+    m.seed = (Math.floor(Math.random() * 4294967295) + 1) >>> 0;
+    m.hits = new Map(); // userId -> temps tenu (ms), calculé par le serveur en rejouant les battements
+    m.endsAt = m.ts + FLAP_MS + CAR_START_LIMIT_MS + MG_SLACK_MS;
   } else if (type === "voiture") {
     m.seed = (Math.floor(Math.random() * 4294967295) + 1) >>> 0; // même parcours d'obstacles pour tout le monde
     m.hits = new Map(); // userId -> temps tenu (ms), calculé par le serveur en rejouant les touches
@@ -1814,7 +1864,7 @@ async function finalizeMiniGame(m) {
     if (state.miniGame === m) { m.results = { top: top.map((r, i) => ({ pseudo: pseudos[i] || "Un viewer", ms: r.ms })), players: m.hits.size }; awardMiniPoints(top.map((r, i) => ({ userId: r.userId, pseudo: pseudos[i] }))); }
     return;
   }
-  if (m.type === "voiture") {
+  if (m.type === "voiture" || m.type === "flappy") {
     if (m.finalizing) return;
     m.finalizing = true;
     const top = [...m.hits.entries()].map(([userId, ms]) => ({ userId, ms })).sort((a, b) => b.ms - a.ms).slice(0, 3); // le plus longtemps d'abord (égalité : le premier arrivé, ordre d'insertion conservé)
@@ -1857,6 +1907,7 @@ function publicMiniGame() {
   if (m.type === "pinata") { out.target = m.target; out.clicks = m.clicks; out.durationMs = PINATA_MS; out.done = !!m.done; }
   else if (m.type === "simon") { out.durationMs = SIMON_MS; }
   else if (m.type === "voiture") { out.durationMs = CAR_MS; out.seed = m.seed; }
+  else if (m.type === "flappy") { out.durationMs = FLAP_MS; out.seed = m.seed; }
   else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
   else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
@@ -1947,6 +1998,26 @@ app.post("/minigame-hit", rateLimit("minigame", 240, 60000), (req, res) => {
     }
     e.dead = true;
     return res.json({ ok: true, correct: false, dead: true, score: e.score });
+  }
+  if (m.type === "flappy") {
+    // Le viewer envoie les ticks où il a donné un coup de nageoire ; le serveur REJOUE la partie (même moteur que le client)
+    // et en tire le temps tenu : impossible d'envoyer un faux temps. Une seule partie par joueur.
+    if (m.results) return res.json({ ok: true, done: false, reason: "expired" });
+    if (m.hits.has(payload.user_id)) return res.json({ ok: true, done: true, already: true, ms: m.hits.get(payload.user_id) });
+    if (now < m.ts - 500 || now > m.endsAt) return res.json({ ok: true, done: false, reason: "expired" });
+    const fl = req.body && req.body.flaps;
+    if (!Array.isArray(fl) || fl.length > FLAP_MAX_EVENTS) return res.json({ ok: true, done: false, reason: "invalid" });
+    let prev = -99;
+    for (const t of fl) {
+      if (!Number.isInteger(t) || t < 0 || t > FL_MAX_TICKS || t - prev < 3) return res.json({ ok: true, done: false, reason: "invalid" }); // au plus ~20 battements/s
+      prev = t;
+    }
+    const ticks = flapReplay(m.seed, fl);
+    const ms = Math.round((ticks * 1000) / FL_TPS);
+    if (ms > now - m.ts + 1500) return res.json({ ok: true, done: false, reason: "too_fast" });
+    if (m.hits.size >= MG_MAX_USERS) return res.json({ ok: true, done: false, reason: "full" });
+    m.hits.set(payload.user_id, ms);
+    return res.json({ ok: true, done: true, ms });
   }
   if (m.type === "voiture") {
     // Le viewer envoie la liste de ses changements de direction ; le serveur REJOUE la course (même moteur que le client)
