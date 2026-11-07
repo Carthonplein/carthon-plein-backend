@@ -1754,20 +1754,21 @@ const MG_START_DELAY_MS = Math.max(3000, Math.min(30000, parseInt(process.env.MG
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
 const PINATA_MS = 32000;            // durée du jeu de rythme (la piñata se casse à coups de flèches)
-const PINATA_FALL_MS = 1600;       // temps de chute d'une flèche (affichage client)
-const PINATA_DMG_PER_PLAYER = Number(process.env.PINATA_DMG_PER_PLAYER) > 0 ? Number(process.env.PINATA_DMG_PER_PLAYER) : 25; // objectif = inscrits x 25 points...
+const PINATA_FALL_MS = 1100;       // temps de chute d'une flèche (affichage client)
+const PINATA_DMG_PER_PLAYER = Number(process.env.PINATA_DMG_PER_PLAYER) > 0 ? Number(process.env.PINATA_DMG_PER_PLAYER) : 35; // objectif = inscrits x 35 points...
 const PINATA_MIN = 60, PINATA_MAX = 30000; // ...borné entre 60 et 30000
-const PINATA_NOTES = 56;           // nombre de flèches dans la partition
+const PINATA_NOTES = 60;           // nombre de flèches dans la partition
 // Partition déterministe : [temps en ms depuis le départ, voie 0..3 (gauche, bas, haut, droite)]. Rythme qui accélère.
 function pinataChart(seed) {
   const rnd = mulberry32(seed >>> 0), notes = [];
   let t = 2200, last = -1;
   for (let i = 0; i < PINATA_NOTES; i++) {
+    const k = i / (PINATA_NOTES - 1); // le rythme accélère de plus en plus : ~650 ms entre deux flèches au début, ~170 ms à la fin
     let lane = Math.floor(rnd() * 4);
     if (lane === last && rnd() < 0.6) lane = (lane + 1 + Math.floor(rnd() * 3)) % 4;
     notes.push([Math.round(t), lane]); last = lane;
-    const k = i / (PINATA_NOTES - 1); // le rythme accélère de plus en plus : ~700 ms entre deux flèches au début, ~240 ms à la fin
-    t += 700 * Math.pow(240 / 700, k) + Math.floor(rnd() * 60 * (1 - k * 0.7));
+    if (k > 0.55 && rnd() < 0.3) notes.push([Math.round(t), (lane + 1 + Math.floor(rnd() * 3)) % 4]); // dans le dernier tiers : parfois 2 flèches en même temps
+    t += 650 * Math.pow(170 / 650, k) + Math.floor(rnd() * 60 * (1 - k * 0.7));
   }
   return notes;
 }
