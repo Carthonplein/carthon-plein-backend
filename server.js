@@ -1647,7 +1647,10 @@ function carReplay(seed, events) {
 // vérifier chaque clic (objet existant à ce moment-là, compté une seule fois par viewer) sans
 // qu'on puisse tricher en envoyant un score inventé.
 const MINIGAME_BY_NUMBER = { 1: "voiture", 51: "pastis", 25: "peche", 40: "pinata", 69: "canard", 7: "puzzle", 33: "memoire", 75: "simon" };
-const MG_START_DELAY_MS = 5000; // compte à rebours avant le premier objet
+// Compte à rebours entre le tirage du numéro et le départ du mini-jeu. La vidéo Twitch arrive chez les viewers avec quelques
+// secondes de retard (≈ 5 s) : leur overlay montre le numéro en retard, et le mini-jeu ne doit pas démarrer avant. 14 s laissent
+// le temps de voir le numéro tomber et d'entendre l'annonce (retard vidéo jusqu'à ~9 s). Réglable avec la variable Render MG_START_DELAY_MS.
+const MG_START_DELAY_MS = Math.max(3000, Math.min(30000, parseInt(process.env.MG_START_DELAY_MS, 10) || 14000));
 const MG_SLACK_MS = 1500;       // tolérance réseau sur un clic
 const MG_MAX_USERS = 3000;
 const PINATA_MS = 20000;            // durée pour casser la piñata
