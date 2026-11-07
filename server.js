@@ -1593,7 +1593,7 @@ app.post("/reset", async (req, res) => {
 // ---------- Mini-jeux ----------
 // ===== Moteur de la course de voitures (IDENTIQUE côté client et serveur : le serveur rejoue les touches du joueur) =====
 // Terrain de 100 x 140 unités ; 60 pas par seconde. Obstacles tirés d'un tirage fixe (graine) commun à tous.
-const CAR_W = 100, CAR_H = 140, CAR_TPS = 60, CAR_MAX_TICKS = 3600;
+const CAR_W = 100, CAR_H = 140, CAR_TPS = 60, CAR_MAX_TICKS = 5400;
 const CAR_OBST = [{ w: 11, h: 16 }, { w: 22, h: 6 }, { w: 15, h: 28 }, { w: 6, h: 7 }]; // voiture, barrière, camion, cône
 function makeCarSim(seed) {
   let a = (seed >>> 0) || 1;
@@ -1665,9 +1665,9 @@ const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
 const MEM_PAIRS = 6;            // mémoire : 6 paires = 12 cartes
 const MEM_MIN_MS = 5000;        // en dessous, temps jugé impossible
-const CAR_MS = 60000;           // durée maximale d'une course
+const CAR_MS = 90000;           // durée maximale d'une course
 const CAR_START_LIMIT_MS = 8000; // on peut encore prendre le départ jusqu'à 8 s après le signal
-const CAR_MAX_EVENTS = 3000;     // nombre maximal de changements de touche acceptés
+const CAR_MAX_EVENTS = 6000;     // nombre maximal de changements de touche acceptés
 const SIMON_MS = 75000;         // durée de la partie
 const SIMON_MAX = 40;           // longueur maximale de la suite
 const SIMON_STEP_MS = 250;      // minimum humainement possible par pression (anti-script)
