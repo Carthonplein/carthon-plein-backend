@@ -1698,7 +1698,7 @@ function flapReplay(seed, flaps) {
 const BOSS_MS = 60000;
 const BOSS_SLOTS = 3;
 const BOSS_HP_PER_PLAYER = Math.max(0.5, Math.min(10, parseFloat(process.env.BOSS_HP_PER_PLAYER) || 1.5)); // réglable sur Render
-const BOSS_HP_MIN = 12, BOSS_HP_MAX = 80;
+const BOSS_HP_MIN = 12; // pas de maximum : la vie suit le nombre d'inscrits
 const BOSS_USER_COOLDOWN_MS = 350; // un même viewer ne peut pas capturer plus de ~3 mots/s
 const BOSS_WORDS = [
   ["thon", "sushi", "algue", "perle", "ancre", "vague", "plage", "sable", "corail", "crabe", "nage", "banc", "mer"],
@@ -1870,7 +1870,7 @@ function startMiniGame(type) {
     m.done = false;      // passe à true à l'instant où l'objectif est atteint
     m.endsAt = m.ts + PINATA_MS + MG_SLACK_MS;
   } else if (type === "boss") {
-    m.maxHp = Math.max(BOSS_HP_MIN, Math.min(BOSS_HP_MAX, Math.round(state.players.length * BOSS_HP_PER_PLAYER)));
+    m.maxHp = Math.max(BOSS_HP_MIN, Math.round(state.players.length * BOSS_HP_PER_PLAYER));
     m.hp = m.maxHp;
     m.users = new Map(); // userId -> { n, pseudo, last, firstAt }
     m.used = new Set(); m.words = []; m.feed = []; m.done = false;
