@@ -681,12 +681,13 @@ app.get("/privacy", (req, res) => {
 </head>
 <body>
   <h1>🐟 Politique de confidentialité - Carthon Plein</h1>
-  <p><em>Dernière mise à jour : octobre 2026</em></p>
+  <p><em>Dernière mise à jour : novembre 2026</em></p>
   <h2>Ce que l'extension utilise et enregistre</h2>
   <p>Carthon Plein est une extension Twitch de loto/bingo interactif, gratuite, qui s'affiche par-dessus le stream de la chaîne carthonplein. Pour fonctionner, elle utilise et conserve :</p>
   <ul>
     <li>Votre pseudo Twitch, obtenu via l'autorisation d'identité Twitch (vous n'êtes jamais obligé de la donner : sans elle, vous pouvez regarder la partie mais pas jouer). Il sert à générer votre carton, à l'afficher dans le classement et à annoncer les gagnants.</li>
     <li>Votre statut d'abonné à la chaîne (le cas échéant), pour vous attribuer un carton bonus.</li>
+    <li>Vos résultats aux mini-jeux : les points de la partie en cours et les records (meilleur résultat de chaque mini-jeu, avec le pseudo de son auteur). Pendant le mini-jeu « boss thon », les mots écrits dans le chat Twitch sont lus par le robot de la chaîne ; seuls les mots du jeu sont utilisés et aucun message du chat n'est conservé.</li>
     <li>Votre progression dans le jeu, conservée d'une partie à l'autre : les cadres de carton débloqués, le nombre de victoires, le nombre de parties jouées, le fait d'avoir joué la soirée de lancement, ainsi que le cadre et le titre que vous avez choisi d'afficher. Ces informations servent uniquement à vous attribuer vos cadres et vos titres.</li>
   </ul>
   <h2>Où sont stockées les données</h2>
@@ -957,7 +958,7 @@ app.get("/reglement", (req, res) => {
 </head>
 <body>
   <h1>🐟 Règlement du jeu "Carthon Plein"</h1>
-  <p><em>Dernière mise à jour : 2026</em></p>
+  <p><em>Dernière mise à jour : novembre 2026</em></p>
 
   <h2>Article 1 — Organisateur</h2>
   <p>Le jeu "Carthon Plein" est organisé par la chaîne Twitch Carthon Plein, sur la plateforme Twitch, dans le cadre de ses diffusions en direct. Contact : carthonplein@gmail.com</p>
@@ -967,6 +968,16 @@ app.get("/reglement", (req, res) => {
 
   <h2>Article 3 — Modalités du jeu</h2>
   <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les mini-jeux gratuits (jeux d'adresse déclenchés par certains numéros, sans aucun effet sur le tirage des numéros) rapportent des points à leurs trois premiers ; à la fin de la partie, le joueur ayant le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+
+  <h2>Article 3 bis — Les mini-jeux</h2>
+  <p>Certains numéros tirés déclenchent automatiquement un mini-jeu gratuit (jeu d'adresse ou de réflexes : course de poissons, pluie de bouteilles, pêche au thon, piñata en rythme, canard, puzzle, mémoire de thons, poisson à faire voler, boss thon géant). Participer à un mini-jeu est facultatif, ne nécessite aucun achat, et n'a <strong>aucun effet sur le tirage des numéros ni sur la partie en cours</strong> ; seule la récompense décrite ci-dessous concerne la partie suivante. Aucun mini-jeu n'est lancé sur le tirage qui termine la partie (Carthon Plein final).</p>
+  <ul>
+    <li><strong>Points :</strong> à la fin de chaque mini-jeu, les trois premiers du classement marquent 3, 2 et 1 point. Dans les mini-jeux collectifs (piñata, boss thon), ces points ne sont attribués que si l'objectif commun est atteint par l'ensemble des joueurs. Les points s'additionnent pendant toute la partie de loto et sont remis à zéro à chaque nouvelle partie.</li>
+    <li><strong>Récompense :</strong> à la fin de la partie, le joueur qui a le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante (non cumulable d'une partie à l'autre). En cas d'égalité de points, il est départagé par le nombre de premières places, puis par celui qui a atteint son total le plus tôt. Les joueurs abonnés conservent en plus leur carton bonus d'abonné. Ce carton récompense l'adresse du joueur ; il lui donne un carton supplémentaire pour la partie suivante, sans garantie de gain.</li>
+    <li><strong>Boss thon :</strong> pendant ce mini-jeu, les mots écrits dans le chat Twitch sont lus par le robot de la chaîne. Seuls les mots du jeu sont pris en compte ; les autres messages ne sont ni utilisés ni conservés.</li>
+    <li><strong>Records :</strong> le meilleur résultat de chaque mini-jeu (et de chaque photo pour le puzzle) est conservé avec le pseudo de son auteur et affiché à la fin du mini-jeu, tant qu'il n'est pas battu.</li>
+    <li><strong>Loyauté :</strong> les résultats sont contrôlés par le serveur. L'usage de scripts, d'automatismes ou de toute méthode de triche est interdit : l'organisateur peut annuler un résultat, retirer un record ou exclure un joueur concerné.</li>
+  </ul>
 
   <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
@@ -982,6 +993,7 @@ app.get("/reglement", (req, res) => {
   <ul>
     <li>le pseudo Twitch du joueur, obtenu via l'autorisation d'identité Twitch donnée lors de l'inscription (sans cette autorisation, il est possible de regarder la partie mais pas d'y participer) : il sert à générer le carton, à l'afficher dans le classement et à annoncer les gagnants ;</li>
     <li>le statut d'abonné à la chaîne, pour attribuer le carton bonus ;</li>
+    <li>les résultats aux mini-jeux : points de la partie en cours, et records (meilleur résultat de chaque mini-jeu avec le pseudo de son auteur). Pour le boss thon, les mots du chat sont lus pendant le jeu mais les messages ne sont pas conservés ;</li>
     <li>la progression du joueur d'une partie à l'autre : cadres de carton débloqués, nombre de victoires, nombre de parties jouées, participation à la soirée de lancement, cadre et titre choisis pour l'affichage. Ces informations servent uniquement à attribuer les cadres et les titres ;</li>
     <li>en cas de gain d'un lot physique, une adresse postale, demandée uniquement au gagnant et utilisée exclusivement pour l'envoi du lot. Elle n'est conservée que le temps nécessaire à l'expédition, puis supprimée.</li>
   </ul>
