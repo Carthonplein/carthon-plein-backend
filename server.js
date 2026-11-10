@@ -1785,7 +1785,7 @@ function pinataChart(seed) {
 const DUCK_MS = 20000;          // durée de la chasse au canard
 const DUCK_RADIUS = 8.5;        // rayon de touche (en % de la largeur de l'écran) : le canard fait ~5-8 % de large, on tolère un peu à côté
 const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
-const PUZZLE_IMAGES = 3;         // nombre de photos du puzzle (puzzle_photo.jpg, puzzle_photo_2.jpg, puzzle_photo_3.jpg côté extension) : une est tirée au hasard par partie
+const PUZZLE_IMAGES = 4;         // nombre de photos du puzzle (puzzle_photo.jpg, puzzle_photo_2.jpg, puzzle_photo_3.jpg, puzzle_photo_4.jpg côté extension) : une est tirée au hasard par partie
 let lastPuzzleImg = -1;          // pour ne jamais tirer deux fois de suite la même photo
 const PUZZLE_MS = 60000;         // temps maximum pour finir le puzzle : au bout d'1 minute la partie s'arrête pour tout le monde
 const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20 pièces à placer) et refusé
