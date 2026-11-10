@@ -1707,8 +1707,9 @@ function flapReplay(seed, flaps) {
 // et un nouveau mot prend sa place. Si la vie tombe à 0 avant la fin du temps, le chat gagne (sinon le thon s'échappe).
 // Classement = nombre de mots capturés ; 3/2/1 points mini-jeux seulement si le boss est vaincu.
 const BOSS_MS = 60000;
-const BOSS_SLOTS = 3;
-const BOSS_HP_PER_PLAYER = Math.max(0.5, Math.min(10, parseFloat(process.env.BOSS_HP_PER_PLAYER) || 1.5)); // réglable sur Render
+const BOSS_SLOTS = 3;           // mots affichés en même temps...
+const BOSS_SLOTS_BIG = 5, BOSS_BIG_FROM = parseInt(process.env.BOSS_BIG_FROM, 10) || 60; // ...5 à partir de 60 inscrits (le chat tape plus vite quand il est nombreux)
+const BOSS_HP_PER_PLAYER = Math.max(0.5, Math.min(10, parseFloat(process.env.BOSS_HP_PER_PLAYER) || 1)); // réglable sur Render
 const BOSS_HP_MIN = 12; // pas de maximum : la vie suit le nombre d'inscrits
 const BOSS_USER_COOLDOWN_MS = 350; // un même viewer ne peut pas capturer plus de ~3 mots/s
 const BOSS_WORDS = [
@@ -1902,7 +1903,8 @@ function startMiniGame(type) {
     m.hp = m.maxHp;
     m.users = new Map(); // userId -> { n, pseudo, last, firstAt }
     m.used = new Set(); m.words = []; m.feed = []; m.done = false;
-    for (let i = 0; i < BOSS_SLOTS; i++) m.words.push(bossPickWord(m));
+    const slots = state.players.length >= BOSS_BIG_FROM ? BOSS_SLOTS_BIG : BOSS_SLOTS;
+    for (let i = 0; i < slots; i++) m.words.push(bossPickWord(m));
     m.endsAt = m.ts + BOSS_MS + MG_SLACK_MS;
   } else if (type === "flappy") {
     m.seed = (Math.floor(Math.random() * 4294967295) + 1) >>> 0;
