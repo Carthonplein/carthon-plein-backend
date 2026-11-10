@@ -1785,6 +1785,8 @@ function pinataChart(seed) {
 const DUCK_MS = 20000;          // durée de la chasse au canard
 const DUCK_RADIUS = 8.5;        // rayon de touche (en % de la largeur de l'écran) : le canard fait ~5-8 % de large, on tolère un peu à côté
 const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
+const PUZZLE_IMAGES = 3;         // nombre de photos du puzzle (puzzle_photo.jpg, puzzle_photo_2.jpg, puzzle_photo_3.jpg côté extension) : une est tirée au hasard par partie
+let lastPuzzleImg = -1;          // pour ne jamais tirer deux fois de suite la même photo
 const PUZZLE_MS = 60000;         // temps maximum pour finir le puzzle : au bout d'1 minute la partie s'arrête pour tout le monde
 const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20 pièces à placer) et refusé
 const PUZZLE_GRACE_MS = 30000;  // après le premier arrivé, les autres ont encore 30 s
@@ -1924,6 +1926,9 @@ function startMiniGame(type) {
     m.endsAt = m.ts + PUZZLE_MS + MG_SLACK_MS;
   } else if (type === "puzzle") {
     m.hits = new Map(); // userId -> temps mis (ms, mesuré par le serveur depuis le départ)
+    { let img = Math.floor(Math.random() * PUZZLE_IMAGES);
+      if (PUZZLE_IMAGES > 1 && img === lastPuzzleImg) img = (img + 1 + Math.floor(Math.random() * (PUZZLE_IMAGES - 1))) % PUZZLE_IMAGES;
+      m.img = lastPuzzleImg = img; }
     m.endsAt = m.ts + PUZZLE_MS + MG_SLACK_MS;
   } else if (type === "canard") {
     m.path = buildDuckPath();
@@ -1956,10 +1961,12 @@ function applyMiniRecord(m) {
   if (!best) return;
   const value = best.ms != null ? best.ms : best.count;
   if (!Number.isFinite(value) || value <= 0 || !best.pseudo || best.pseudo === "Un viewer") return;
-  const low = MINI_RECORD_LOW.has(m.type), cur = miniRecords[m.type];
+  // Puzzle : un record par photo (la photo 0 garde l'ancienne clé « puzzle » pour ne pas perdre un record existant).
+  const rkey = m.type === "puzzle" && m.img > 0 ? "puzzle:" + m.img : m.type;
+  const low = MINI_RECORD_LOW.has(m.type), cur = miniRecords[rkey];
   const beaten = !cur || (low ? value < cur.value : value > cur.value);
-  if (beaten) { miniRecords[m.type] = { pseudo: best.pseudo, value, ts: Date.now() }; redisSetJSON("miniRecords", miniRecords); }
-  const rec = miniRecords[m.type];
+  if (beaten) { miniRecords[rkey] = { pseudo: best.pseudo, value, ts: Date.now() }; redisSetJSON("miniRecords", miniRecords); }
+  const rec = miniRecords[rkey];
   m.record = { pseudo: rec.pseudo, value: rec.value, broken: !!beaten, kind: best.ms != null ? "ms" : "count" };
 }
 async function finalizeMiniGame(m) {
@@ -2038,7 +2045,7 @@ function publicMiniGame() {
     out.feed = m.feed.slice(-4);
     out.top = [...m.users.values()].sort((a, b) => b.n - a.n || a.firstAt - b.firstAt).slice(0, 3).map((u) => ({ pseudo: u.pseudo || "Un viewer", count: u.n }));
   }
-  else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; }
+  else if (m.type === "puzzle") { out.durationMs = PUZZLE_MS; out.img = m.img || 0; }
   else if (m.type === "memoire") { out.durationMs = PUZZLE_MS; out.deck = m.deck; }
   else if (m.type === "canard") { out.durationMs = DUCK_MS; if (Date.now() < m.endsAt) out.path = m.path; }
   else if (Date.now() < m.endsAt) out.items = m.items; // le calendrier n'est utile que pendant le jeu
