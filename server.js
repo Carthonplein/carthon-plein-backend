@@ -1783,7 +1783,7 @@ function pinataChart(seed) {
   return notes;
 }
 const DUCK_MS = 20000;          // durée de la chasse au canard
-const DUCK_RADIUS = 6.5;        // rayon de touche (en % de la largeur de l'écran) : petit, le canard est difficile
+const DUCK_RADIUS = 8.5;        // rayon de touche (en % de la largeur de l'écran) : le canard fait ~5-8 % de large, on tolère un peu à côté
 const DUCK_T_SLACK_MS = 400;    // écart toléré entre l'heure annoncée par le client et l'heure serveur
 const PUZZLE_MS = 60000;         // temps maximum pour finir le puzzle : au bout d'1 minute la partie s'arrête pour tout le monde
 const PUZZLE_MIN_MS = 8000;     // en dessous, le temps est jugé impossible (20 pièces à placer) et refusé
