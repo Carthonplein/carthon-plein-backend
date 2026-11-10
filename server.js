@@ -1000,6 +1000,14 @@ app.get("/reglement", (req, res) => {
 </html>`);
 });
 
+// Pendant les premières secondes d'un (re)démarrage, la partie en cours n'est pas encore relue depuis Redis :
+// répondre maintenant ferait croire aux viewers que la partie est vide et qu'ils ne sont plus inscrits
+// (carton qui disparaît). On répond « pas prêt » : l'extension garde alors ce qu'elle affichait.
+app.use(["/state", "/card"], (req, res, next) => {
+  if (!dataReady) return res.status(503).json({ error: "démarrage en cours" });
+  next();
+});
+
 app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   const drawnSet = new Set(state.drawn);
   // ne garde que les chutes de boules récentes (10 dernières secondes)
