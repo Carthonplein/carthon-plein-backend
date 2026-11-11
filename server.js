@@ -262,6 +262,7 @@ let state = {
   duckEvent: null, // { id, ts } — easter egg "canard volant" (extension v114 : bouton du streamer), conservé pour compatibilité
   miniPoints: {}, // points cumulés aux mini-jeux de la partie : { userId: { userId, pseudo, pts, firsts, lastTs } }
   miniBonus: null, // { pseudo, points } : meilleur joueur des mini-jeux de la partie précédente => carton bonus pour CETTE partie
+  testMode: false, // « mode test » du streamer : la partie ne compte pour rien (victoires, parties jouées, dernier gagnant, records, bonus) ; coupé à la prochaine « Nouvelle partie »
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
 };
 
@@ -422,6 +423,7 @@ let overlayVolume = 1; // volume des sons de l'overlay pour tous les viewers (0 
 let lastWinner = null;
 
 function recordWin(pseudo, isSuper) {
+  if (state.testMode) return; // partie de test : aucune victoire comptée
   if (!winsByPseudo[pseudo]) winsByPseudo[pseudo] = { total: 0, super: 0 };
   winsByPseudo[pseudo].total += 1;
   if (isSuper) winsByPseudo[pseudo].super += 1;
@@ -610,7 +612,7 @@ function refreshTiersAndWinner() {
 
     if (uniqueFinalists.length === 1) {
       const isSuper = state.drawn.length <= SUPER_THRESHOLD;
-      if (isSuper) grantFrame(uniqueFinalists[0].pseudo, SUPER_FRAME_KEY);
+      if (isSuper && !state.testMode) grantFrame(uniqueFinalists[0].pseudo, SUPER_FRAME_KEY);
       recordWin(uniqueFinalists[0].pseudo, isSuper);
       state.winner = { pseudo: uniqueFinalists[0].pseudo, cardType: uniqueFinalists[0].cardType, isSuper, ...getPublicStatus(uniqueFinalists[0].pseudo) };
     } else {
@@ -1031,6 +1033,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
     players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus })),
     duckEvent: state.duckEvent,
     miniBonus: state.miniBonus,
+    testMode: !!state.testMode,
     miniLeaders: miniRanking().filter((e) => e.pseudo).slice(0, 10).map((e) => ({ pseudo: e.pseudo, pts: e.pts })),
     gamePhase: gamePhase(),
     registrationOpen: registrationIsOpen(),
@@ -1137,6 +1140,15 @@ app.post("/set-volume", rateLimit("setvolume", 60, 60000), (req, res) => {
   overlayVolume = Math.round(v) / 100;
   redisSetJSON("overlayVolume", overlayVolume);
   res.json({ ok: true, overlayVolume });
+});
+
+// Mode test (streamer) : la partie en cours devient jetable. Se coupe tout seul à la prochaine « Nouvelle partie ».
+app.post("/test-mode", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { on } = req.body || {};
+  state.testMode = typeof on === "boolean" ? on : !state.testMode;
+  console.log("AUDIT mode test " + (state.testMode ? "activé" : "coupé"));
+  res.json({ ok: true, testMode: state.testMode });
 });
 
 app.post("/toggle-overlay", (req, res) => {
@@ -1592,9 +1604,11 @@ app.post("/reset", async (req, res) => {
     const bp = best.pseudo || (await pseudoForUserId(best.userId));
     if (bp) nextMiniBonus = { pseudo: bp, points: best.pts };
   }
+  // Mode test : la partie qui se termine était jetable => le bonus en attente (celui de la dernière vraie partie) est conservé tel quel.
+  if (state.testMode) nextMiniBonus = state.miniBonus || null;
   // La partie qui se termine avait un gagnant : on le retient avant d'effacer l'état.
   // (Pas de gagnant, par exemple partie abandonnée : on garde le précédent.)
-  if (state.winner && state.winner.pseudo) {
+  if (!state.testMode && state.winner && state.winner.pseudo) {
     lastWinner = {
       pseudo: state.winner.pseudo,
       cardType: state.winner.cardType || "principal",
@@ -1605,11 +1619,11 @@ app.post("/reset", async (req, res) => {
     };
     redisSetJSON("lastWinner", lastWinner);
   }
-  recordGameParticipation();
+  if (!state.testMode) recordGameParticipation(); // partie de test : les parties jouées ne comptent pas
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, duckEvent: null, miniPoints: {}, miniBonus: nextMiniBonus, panDrops: [], registrationEndsAt: regEnd };
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, duckEvent: null, miniPoints: {}, miniBonus: nextMiniBonus, testMode: false, panDrops: [], registrationEndsAt: regEnd };
   res.json({ ok: true, miniBonus: nextMiniBonus });
 });
 
@@ -1966,6 +1980,7 @@ function mgRanking(m) {
 // Temps bas = meilleur pour canard/puzzle/mémoire ; sinon plus haut = meilleur (temps tenu, bouteilles, points, mots...).
 const MINI_RECORD_LOW = new Set(["canard", "puzzle", "memoire"]);
 function applyMiniRecord(m) {
+  if (state.testMode) return; // partie de test : pas de record
   if (m.recordDone || state.miniGame !== m || !m.results) return;
   m.recordDone = true;
   const r = m.results;
@@ -2277,7 +2292,7 @@ app.post("/start-wheel-spin", (req, res) => {
 
   const isSuper = (state.pendingFinalistsDrawCount ?? state.drawn.length) <= SUPER_THRESHOLD;
   const finalWinnerPseudo = match ? match.pseudo : winnerPseudo;
-  if (isSuper) grantFrame(finalWinnerPseudo, SUPER_FRAME_KEY);
+  if (isSuper && !state.testMode) grantFrame(finalWinnerPseudo, SUPER_FRAME_KEY);
   recordWin(finalWinnerPseudo, isSuper);
   state.winner = match
     ? { pseudo: match.pseudo, cardType: match.cardType, isSuper, ...getPublicStatus(finalWinnerPseudo) }
@@ -2366,7 +2381,7 @@ function gameSnapshot() {
     drawn: state.drawn, players: state.players, tierWinners: state.tierWinners, winner: state.winner,
     pendingFinalists: state.pendingFinalists, pendingFinalistsDrawCount: state.pendingFinalistsDrawCount,
     started: state.started, gameId: state.gameId, registrationEndsAt: state.registrationEndsAt,
-    miniPoints: state.miniPoints, miniBonus: state.miniBonus,
+    miniPoints: state.miniPoints, miniBonus: state.miniBonus, testMode: !!state.testMode,
   };
 }
 function restoreGameSnapshot(v) {
@@ -2377,6 +2392,7 @@ function restoreGameSnapshot(v) {
     players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub, hasBonus: !!p.hasBonus })),
     miniPoints: v.miniPoints && typeof v.miniPoints === "object" ? v.miniPoints : {},
     miniBonus: v.miniBonus && typeof v.miniBonus.pseudo === "string" ? v.miniBonus : null,
+    testMode: !!v.testMode,
     tierWinners: v.tierWinners && typeof v.tierWinners === "object" ? v.tierWinners : { 1: null, 2: null, 3: null },
     winner: v.winner || null,
     pendingFinalists: Array.isArray(v.pendingFinalists) ? v.pendingFinalists : [],
