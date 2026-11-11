@@ -2413,11 +2413,16 @@ function saveGameSnapshotIfChanged() {
 }
 
 // Données à ne JAMAIS perdre : clé Redis -> [lecteur, écriture en mémoire, valeur par défaut]
+// Remise à zéro unique des records à la sortie de la v131 : au premier démarrage avec cette valeur, les records
+// existants (tests) sont archivés puis effacés ; aux démarrages suivants, rien ne change. Pour une nouvelle remise à zéro, changer la valeur.
+const MINI_RECORDS_EPOCH = "v131";
+let miniRecordsEpoch = null;
 const PERSISTED = {
   unlockedFramesByPseudo: [() => unlockedFramesByPseudo, (v) => { unlockedFramesByPseudo = v; }, {}],
   displayChoiceByPseudo: [() => displayChoiceByPseudo, (v) => { displayChoiceByPseudo = v; }, {}],
   winsByPseudo: [() => winsByPseudo, (v) => { winsByPseudo = v; }, {}],
   gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
+  miniRecordsEpoch: [() => miniRecordsEpoch, (v) => { miniRecordsEpoch = typeof v === "string" ? v : null; }, null],
   miniRecords: [() => miniRecords, (v) => { miniRecords = v && typeof v === "object" ? v : {}; }, {}],
   pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
@@ -2469,6 +2474,14 @@ async function retryUnreadableKeys() {
     set(await redisGetJSON(key, fallback, 5));
   }
   dataReady = true;
+  if (miniRecordsEpoch !== MINI_RECORDS_EPOCH && !redisUnreadable.has("miniRecords") && !redisUnreadable.has("miniRecordsEpoch")) {
+    if (Object.keys(miniRecords).length) await redisSetJSON("miniRecordsArchive:" + Date.now(), miniRecords);
+    miniRecords = {};
+    miniRecordsEpoch = MINI_RECORDS_EPOCH;
+    await redisSetJSON("miniRecords", miniRecords);
+    await redisSetJSON("miniRecordsEpoch", miniRecordsEpoch);
+    console.log("Records des mini-jeux remis à zéro (sortie " + MINI_RECORDS_EPOCH + ").");
+  }
   if (redisUnreadable.size > 0) {
     console.error("⚠️ ATTENTION : clés Redis illisibles au démarrage (" + [...redisUnreadable].join(", ") + ") — elles ne seront PAS écrasées ; nouvelle tentative toutes les 30 s.");
   }
