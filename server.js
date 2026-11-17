@@ -312,7 +312,7 @@ const PURCHASABLE_FRAMES = ["rock", "poop", "sea", "disco", "dino", "western", "
 // Cadres saisonniers PAS ENCORE distribuables : ils ne comptent pas pour le titre
 // "Grand Collectionneur". Quand la saison arrive (ex. Noël en décembre), retire simplement
 // le nom de cette liste : le cadre devient alors obligatoire pour ce titre.
-const SEASONAL_FRAMES_LOCKED = ["noel", "valentine", "easter"];
+const SEASONAL_FRAMES_LOCKED = ["valentine", "easter"];
 
 // Choix d'affichage de chaque viewer (badge/titre qu'il a sélectionné parmi
 // ceux disponibles) — comme unlockedFramesByPseudo, chargé/sauvé sur Redis.
