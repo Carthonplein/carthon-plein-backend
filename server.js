@@ -623,7 +623,7 @@ function refreshTiersAndWinner() {
   }
 }
 
-// Vérifie que la requête vient bien du streamer ou d'un modérateur, via le
+// Vérifie que la requête vient bien du streamer (les modérateurs n'ont PAS accès), via le
 // token Twitch signé envoyé en en-tête "Authorization: Bearer <token>" —
 // et non plus via une clé partagée envoyée dans le corps de la requête.
 function checkAdmin(req, res) {
@@ -631,8 +631,8 @@ function checkAdmin(req, res) {
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const payload = verifyTwitchExtensionToken(token);
   const role = payload && payload.role;
-  if (role !== "broadcaster" && role !== "moderator") {
-    res.status(401).json({ error: "accès streamer ou modérateur requis" });
+  if (role !== "broadcaster") {
+    res.status(401).json({ error: "accès streamer requis" });
     return false;
   }
   return payload;
