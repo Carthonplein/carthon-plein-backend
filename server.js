@@ -1057,6 +1057,22 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   });
 });
 
+// Classement complet en temps réel (page "inscrits.html" du streamer) : pour chaque inscrit, le nombre de
+// numéros qu'il lui reste à voir sortir pour faire Carthon Plein (son meilleur carton). Le calcul est mis en
+// cache tant que la partie, les inscrits et les numéros tirés ne changent pas.
+let standingsCache = { key: "", body: null };
+app.get("/standings", rateLimit("standings", 300, 60000), (req, res) => {
+  const key = state.gameId + "|" + state.drawn.length + "|" + state.players.map((p) => p.pseudo + (p.isSub ? "s" : "") + (p.hasBonus ? "b" : "")).join(",");
+  if (standingsCache.key !== key) {
+    const rows = computeFullStandings(new Set(state.drawn)).map((e) => {
+      const p = state.players.find((x) => x.pseudo === e.pseudo);
+      return { pseudo: e.pseudo, remaining: e.remaining, lines: e.count, isSub: !!(p && p.isSub), bonusCard: e.cardType === "bonus" };
+    });
+    standingsCache = { key, body: { gameId: state.gameId, drawnCount: state.drawn.length, total: rows.length, standings: rows } };
+  }
+  res.json(standingsCache.body);
+});
+
 // Ancienne inscription manuelle (pseudo + isSub libres, sans aucune vérification) : plus
 // utilisée par l'extension (inscription par identité Twitch via /register-by-identity, ou
 // par le chat avec !carthon). Désactivée car n'importe qui pouvait s'inscrire sous un faux
