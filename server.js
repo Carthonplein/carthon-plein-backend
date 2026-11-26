@@ -261,6 +261,7 @@ let state = {
   miniGame: null, // mini-jeu en cours { id, type, ts, winner } (ex. bouteille de pastis au n°51)
   duckEvent: null, // { id, ts } — easter egg "canard volant" (extension v114 : bouton du streamer), conservé pour compatibilité
   miniPoints: {}, // points cumulés aux mini-jeux de la partie : { userId: { userId, pseudo, pts, firsts, lastTs } }
+  raceBonus: null, // { pseudo } : gagnant de la course d'hippocampes précédente => carton « Bonus course » pour CETTE partie
   miniBonus: null, // { pseudo, points } : meilleur joueur des mini-jeux de la partie précédente => carton bonus pour CETTE partie
   testMode: false, // « mode test » du streamer : la partie ne compte pour rien (victoires, parties jouées, dernier gagnant, records, bonus) ; coupé à la prochaine « Nouvelle partie »
   panDrops: [], // { id, ts } — easter egg "!pan" (explosion à un endroit/taille aléatoire), purgé après quelques secondes
@@ -524,16 +525,29 @@ function miniRanking() {
 function hasMiniBonus(pseudo) {
   return !!(state.miniBonus && state.miniBonus.pseudo && String(pseudo).toLowerCase() === state.miniBonus.pseudo.toLowerCase());
 }
-function playerHasBonusCard(p) { return !!(p && (p.isSub || p.hasBonus)); }
-// 3e carton : un abonné qui est aussi champion des mini-jeux garde son carton bonus abonné ET reçoit un carton mini-jeux.
-function playerHasMiniCard(p) { return !!(p && p.isSub && p.hasBonus); }
+// Cartons supplémentaires d'un joueur, dans l'ordre : abonné, bonus mini-jeux, bonus course (4 cartons au maximum :
+// 1 gratuit + 3 bonus). Les graines "#sub#", "#mini#", "#race#" correspondent aux 1er, 2e et 3e carton supplémentaire
+// (comportement inchangé pour un abonné seul ou un champion des mini-jeux seul).
+const EXTRA_SEEDS = ["#sub#", "#mini#", "#race#"];
+function extraKinds(p) {
+  const k = [];
+  if (p && p.isSub) k.push("sub");
+  if (p && p.hasBonus) k.push("mini");
+  if (p && p.hasRace) k.push("race");
+  return k;
+}
+function extraCards(p, pseudo) {
+  return extraKinds(p).map((kind, i) => ({ kind, grid: generateCard(pseudo + EXTRA_SEEDS[i] + state.gameId) }));
+}
+function playerHasBonusCard(p) { return extraKinds(p).length >= 1; }
+function playerHasMiniCard(p) { return extraKinds(p).length >= 2; }
+function playerHasRaceCard(p) { return extraKinds(p).length >= 3; }
 
 function computeEntrants() {
   const entrants = [];
   for (const p of state.players) {
     entrants.push({ pseudo: p.pseudo, cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) });
-    if (playerHasBonusCard(p)) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
-    if (playerHasMiniCard(p)) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: generateCard(p.pseudo + "#mini#" + state.gameId) });
+    for (const c of extraCards(p, p.pseudo)) entrants.push({ pseudo: p.pseudo, cardType: "bonus", grid: c.grid });
   }
   return entrants;
 }
@@ -544,8 +558,7 @@ function computeFullStandings(drawnSet) {
   const bestByPseudo = new Map();
   for (const p of state.players) {
     const cards = [{ cardType: "principal", grid: generateCard(p.pseudo + "#" + state.gameId) }];
-    if (playerHasBonusCard(p)) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#sub#" + state.gameId) });
-    if (playerHasMiniCard(p)) cards.push({ cardType: "bonus", grid: generateCard(p.pseudo + "#mini#" + state.gameId) });
+    for (const c of extraCards(p, p.pseudo)) cards.push({ cardType: "bonus", grid: c.grid });
     for (const c of cards) {
       const status = columnStatus(c.grid, drawnSet);
       const marked = c.grid.flat().filter((v) => drawnSet.has(v)).length;
@@ -659,7 +672,7 @@ function registerPlayerInternal(pseudo, isSub) {
   if (gamePhase() !== "lobby") return { ok: false, reason: "closed" };
   if (!registrationIsOpen()) return { ok: false, reason: "closed" };
   if (!state.players.some((p) => p.pseudo === pseudo)) {
-    state.players.push({ pseudo, isSub: !!isSub, hasBonus: hasMiniBonus(pseudo) });
+    state.players.push({ pseudo, isSub: !!isSub, hasBonus: hasMiniBonus(pseudo), hasRace: hasRaceBonus(pseudo) });
   }
   return { ok: true };
 }
@@ -981,7 +994,11 @@ app.get("/reglement", (req, res) => {
     <li><strong>Loyauté :</strong> les résultats sont contrôlés par le serveur. L'usage de scripts, d'automatismes ou de toute méthode de triche est interdit : l'organisateur peut annuler un résultat, retirer un record ou exclure un joueur concerné.</li>
   </ul>
 
-  <h2>Article 4 — Détermination du/des gagnant(s)</h2>
+  <h2>Article 3 ter — La course d'hippocampes</h2>
+  <p>De temps à autre, le streamer peut organiser une course d'hippocampes, ouverte uniquement pendant une période d'inscription qu'il déclenche lui-même. L'inscription se fait en échangeant la récompense de points de chaîne « Course d'hippocampes » (par défaut 50 points de chaîne, points gratuits et gagnés en regardant la chaîne ; ils n'ont aucune valeur monétaire). Le nombre de participants n'est pas limité. Le résultat est <strong>entièrement tiré au hasard</strong> par le serveur : aucune habileté ni aucun achat ne l'influence, et la course est identique pour tous les spectateurs. Si la course est annulée avant son départ, les points de chaîne sont remboursés.</p>
+  <p><strong>Récompense :</strong> le gagnant reçoit un carton « Bonus course » pour la prochaine partie de loto (non cumulable d'une partie à l'autre, aucun gain de points de chaîne). Ce carton s'ajoute aux autres cartons bonus éventuels (abonné, mini-jeux) : un joueur peut ainsi disposer de 4 cartons au maximum.</p>
+
+    <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
 
   <h2>Article 5 — Lots</h2>
@@ -1030,7 +1047,9 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
   state.panDrops = state.panDrops.filter((p) => now - p.ts < 10000);
   res.json({
     drawn: state.drawn,
-    players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus })),
+    players: state.players.map((p) => ({ pseudo: p.pseudo, isSub: p.isSub, hasBonus: !!p.hasBonus, hasRace: !!p.hasRace })),
+    race: racePublic(),
+    raceBonus: state.raceBonus,
     duckEvent: state.duckEvent,
     miniBonus: state.miniBonus,
     testMode: !!state.testMode,
@@ -1062,7 +1081,7 @@ app.get("/state", rateLimit("state", 900, 60000), (req, res) => {
 // cache tant que la partie, les inscrits et les numéros tirés ne changent pas.
 let standingsCache = { key: "", body: null };
 app.get("/standings", rateLimit("standings", 300, 60000), (req, res) => {
-  const key = state.gameId + "|" + state.drawn.length + "|" + state.players.map((p) => p.pseudo + (p.isSub ? "s" : "") + (p.hasBonus ? "b" : "")).join(",");
+  const key = state.gameId + "|" + state.drawn.length + "|" + state.players.map((p) => p.pseudo + (p.isSub ? "s" : "") + (p.hasBonus ? "b" : "") + (p.hasRace ? "r" : "")).join(",");
   if (standingsCache.key !== key) {
     const rows = computeFullStandings(new Set(state.drawn)).map((e) => {
       const p = state.players.find((x) => x.pseudo === e.pseudo);
@@ -1091,14 +1110,17 @@ app.get("/card/:pseudo", rateLimit("card", 600, 60000), (req, res) => {
     return res.json({ registered: false, unlockedFrames, availableBadges, availableTitles, displayChoice });
   }
   const grid = generateCard(pseudo + "#" + state.gameId);
-  const bonusGrid = playerHasBonusCard(player) ? generateCard(pseudo + "#sub#" + state.gameId) : null;
-  const miniGrid = playerHasMiniCard(player) ? generateCard(pseudo + "#mini#" + state.gameId) : null;
+  const extras = extraCards(player, pseudo);
+  const bonusGrid = extras[0] ? extras[0].grid : null;
+  const miniGrid = extras[1] ? extras[1].grid : null;
+  const raceGrid = extras[2] ? extras[2].grid : null;
+  const extraKindsList = extras.map((e) => e.kind); // [kind du 1er, 2e, 3e carton supplémentaire] : sert aux libellés
   const drawnSet = new Set(state.drawn);
   const myStanding = getStandingFor(pseudo, drawnSet);
   // Position du viewer au classement des mini-jeux (affichée s'il n'est pas dans le top 3 public).
   let miniMe = null;
   { const mr = miniRanking(); const idx = mr.findIndex((e) => e.pseudo && e.pseudo.toLowerCase() === pseudo.toLowerCase()); if (idx >= 0) miniMe = { rank: idx + 1, pts: mr[idx].pts }; }
-  res.json({ registered: true, grid, bonusGrid, miniGrid, miniMe, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
+  res.json({ registered: true, grid, bonusGrid, miniGrid, raceGrid, extraKinds: extraKindsList, miniMe, unlockedFrames, availableBadges, availableTitles, displayChoice, myStanding });
 });
 
 app.post("/set-display-choice", rateLimit("display", 60, 60000), async (req, res) => {
@@ -1330,7 +1352,7 @@ app.get("/auth/twitch/start", (req, res) => {
     client_id: TWITCH_CLIENT_ID,
     redirect_uri: TWITCH_REDIRECT_URI,
     response_type: "code",
-    scope: "channel:read:subscriptions",
+    scope: "channel:read:subscriptions channel:manage:redemptions",
   });
   res.redirect(url);
 });
@@ -1540,8 +1562,7 @@ app.post("/drop-ball", rateLimit("drop", 90, 60000), (req, res) => {
 
   const drawnSet = new Set(state.drawn);
   const cardsToCheck = [generateCard(pseudo + "#" + state.gameId)];
-  if (playerHasBonusCard(player)) cardsToCheck.push(generateCard(pseudo + "#sub#" + state.gameId));
-  if (playerHasMiniCard(player)) cardsToCheck.push(generateCard(pseudo + "#mini#" + state.gameId));
+  for (const c of extraCards(player, pseudo)) cardsToCheck.push(c.grid);
 
   let eligible = false;
   for (const grid of cardsToCheck) {
@@ -1622,6 +1643,10 @@ app.post("/reset", async (req, res) => {
   }
   // Mode test : la partie qui se termine était jetable => le bonus en attente (celui de la dernière vraie partie) est conservé tel quel.
   if (state.testMode) nextMiniBonus = state.miniBonus || null;
+  // Bonus course : le gagnant de la dernière course reçoit un carton pour CETTE nouvelle partie. Partie non jouée ou mode test : on garde le bonus déjà attribué.
+  const gameWasUnplayed = state.drawn.length === 0 && !Object.keys(state.miniPoints || {}).length;
+  let nextRaceBonus = pendingRaceBonus ? { pseudo: pendingRaceBonus.pseudo } : (gameWasUnplayed || state.testMode ? state.raceBonus || null : null);
+  if (pendingRaceBonus) { pendingRaceBonus = null; redisSetJSON("pendingRaceBonus", null); }
   // La partie qui se termine avait un gagnant : on le retient avant d'effacer l'état.
   // (Pas de gagnant, par exemple partie abandonnée : on garde le précédent.)
   if (!state.testMode && state.winner && state.winner.pseudo) {
@@ -1639,8 +1664,8 @@ app.post("/reset", async (req, res) => {
   // Minuteur d'inscription facultatif (en secondes, 10 s à 30 min) choisi par le streamer.
   const regSecs = Math.floor(Number(req.body && req.body.registrationSeconds));
   const regEnd = regSecs >= 10 && regSecs <= 1800 ? Date.now() + regSecs * 1000 : null;
-  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, duckEvent: null, miniPoints: {}, miniBonus: nextMiniBonus, testMode: false, panDrops: [], registrationEndsAt: regEnd };
-  res.json({ ok: true, miniBonus: nextMiniBonus });
+  state = { drawn: [], players: [], tierWinners: { 1: null, 2: null, 3: null }, winner: null, pendingFinalists: [], pendingFinalistsDrawCount: null, wheelSpin: null, started: true, gameId: newGameId(), ballDrops: [], miniGame: null, duckEvent: null, miniPoints: {}, miniBonus: nextMiniBonus, raceBonus: nextRaceBonus, testMode: false, panDrops: [], registrationEndsAt: regEnd };
+  res.json({ ok: true, miniBonus: nextMiniBonus, raceBonus: nextRaceBonus });
 });
 
 // ---------- Mini-jeux ----------
@@ -2324,11 +2349,339 @@ app.post("/start-wheel-spin", (req, res) => {
   res.json({ ok: true, winner: state.winner, wheelSpin: state.wheelSpin });
 });
 
+// Moteur de course (copie exacte de ext/race-engine.js : même code côté overlay, donc même course partout)
+const RaceEngine = (function () { const module = { exports: {} }; const self = undefined;
+// Course d'hippocampes : moteur DÉTERMINISTE partagé par le serveur (calcul du gagnant) et l'overlay (affichage).
+// Même graine + même liste de participants = exactement la même course, chez tout le monde.
+// Uniquement des opérations arithmétiques simples (pas de Math.sin / Math.random) pour que le résultat soit
+// identique sur tous les navigateurs.
+(function (root) {
+  var DT = 0.1;          // pas de simulation (secondes)
+  var MAX_T = 64;        // durée maximale
+  var TARGET_T = 58;     // durée visée d'un hippocampe moyen pour parcourir la piste
+
+  function rng(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6d2b79f5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Simule la course. n = nombre d'hippocampes (>= 1). Retourne :
+  //  steps  : tableau de Float32Array (positions 0..1 de chaque hippocampe à chaque pas de DT secondes)
+  //  events : [{ t, type: "courant"|"chute"|"jet"|"obstacle", a, b }]  (a = concerné, b = lanceur pour "jet")
+  //  winner : indice du vainqueur ; finishT : instant d'arrivée (s) ; dt
+  function simulate(n, seed) {
+    var R = rng(seed);
+    var pos = new Float32Array(n);
+    var noise = new Float32Array(n);   // variation lente de la vitesse de chacun
+    var stall = new Float32Array(n);   // temps restant à l'arrêt/ralenti (s)
+    var slow = new Float32Array(n);    // facteur de ralentissement pendant un "jet"
+    var burst = new Float32Array(n);   // temps restant de coup de boost (s)
+    var base = 1 / TARGET_T;
+    var steps = [new Float32Array(pos)];
+    var events = [];
+    var nextEvent = 1.5;
+    var winner = -1, finishT = null;
+    var i, k, t = 0;
+    var order = new Array(n);
+    for (i = 0; i < n; i++) order[i] = i;
+
+    var maxSteps = Math.round(MAX_T / DT);
+    for (k = 1; k <= maxSteps; k++) {
+      t = k * DT;
+      // classement actuel (n petit => tri direct suffisant ; n grand => coût acceptable, 640 pas seulement)
+      order.sort(function (x, y) { return pos[y] - pos[x] || x - y; });
+      var mean = 0;
+      for (i = 0; i < n; i++) mean += pos[i];
+      mean /= n;
+      var lead = pos[order[0]];
+
+      // événements aléatoires : plus nombreux vers la fin pour le suspense
+      while (t >= nextEvent && n >= 2) {
+        var left = MAX_T - nextEvent;
+        var gap = lead > 0.75 ? 0.7 : (lead > 0.45 ? 1.4 : 2.2);
+        nextEvent += gap * (0.6 + R() * 0.8);
+        // 75 % des événements touchent le groupe de tête (ceux que l'on voit), 25 % le reste
+        var top = Math.min(n, 12);
+        var pickIdx = function () { return R() < 0.75 ? order[Math.floor(R() * top)] : order[Math.floor(R() * n)]; };
+        var r = R(), a, b;
+        if (r < 0.28) {            // courant marin : coup de boost
+          a = pickIdx(); burst[a] = 1.0; events.push({ t: t, type: "courant", a: a });
+        } else if (r < 0.56) {     // chute : recule et reste ralenti
+          a = pickIdx(); stall[a] = 1.0; pos[a] = Math.max(0, pos[a] - (0.025 + R() * 0.03)); events.push({ t: t, type: "chute", a: a });
+        } else if (r < 0.80 && n >= 3) { // jet d'objet : un lanceur vise celui qui le précède
+          var rk = 1 + Math.floor(R() * Math.min(n - 1, top));
+          var thrower = order[rk], victim = order[rk - 1];
+          slow[victim] = 1.4; events.push({ t: t, type: "jet", a: victim, b: thrower });
+        } else {                   // méduse / crabe : bloque un couloir pendant ~1 s
+          a = pickIdx(); stall[a] = Math.max(stall[a], 1.0); events.push({ t: t, type: "obstacle", a: a });
+        }
+      }
+
+      for (i = 0; i < n; i++) {
+        if (k % 12 === 1) noise[i] = (R() * 2 - 1) * 0.55;
+        var v = base * (1 + noise[i]);
+        // élastique : le peloton reste groupé (les échappés ralentissent un peu, les attardés accélèrent)
+        var d = (pos[i] - mean) * Math.min(1, (n - 1) / 6); // peu de participants : élastique atténué
+        if (d > 0.14) v *= 1 - Math.min(0.5, (d - 0.14) * 2.2);
+        else if (d < -0.14) v *= 1 + Math.min(0.6, (-d - 0.14) * 2.4);
+        if (burst[i] > 0) { v *= 2.6; burst[i] -= DT; }
+        if (slow[i] > 0) { v *= 0.35; slow[i] -= DT; }
+        if (stall[i] > 0) { v *= 0.08; stall[i] -= DT; }
+        pos[i] += v * DT;
+        if (winner < 0 && pos[i] >= 1) { winner = i; finishT = t; }
+      }
+      // plusieurs arrivées au même pas : le plus avancé gagne
+      if (winner >= 0) {
+        var bestI = winner;
+        for (i = 0; i < n; i++) if (pos[i] > pos[bestI]) bestI = i;
+        winner = bestI;
+      }
+      steps.push(new Float32Array(pos));
+      if (winner >= 0) break;
+    }
+    if (winner < 0) { // sécurité : personne n'a franchi la ligne => le plus avancé gagne
+      winner = 0;
+      for (i = 1; i < n; i++) if (pos[i] > pos[winner]) winner = i;
+      finishT = t;
+    }
+    return { steps: steps, events: events, winner: winner, finishT: finishT, dt: DT, n: n };
+  }
+
+  // Positions interpolées à l'instant t (secondes depuis le départ), bornées à 1.
+  function positionsAt(sim, t, out) {
+    var n = sim.n, f = Math.max(0, t) / sim.dt, i0 = Math.floor(f), fr = f - i0, last = sim.steps.length - 1;
+    if (i0 >= last) { i0 = last; fr = 0; }
+    var A = sim.steps[i0], B = sim.steps[Math.min(last, i0 + 1)];
+    out = out || new Float32Array(n);
+    for (var i = 0; i < n; i++) out[i] = Math.min(1, A[i] + (B[i] - A[i]) * fr);
+    return out;
+  }
+
+  var api = { simulate: simulate, positionsAt: positionsAt, rng: rng, DT: DT };
+  if (typeof module !== "undefined" && module.exports) module.exports = api; else root.RaceEngine = api;
+})(undefined);
+
+return module.exports; })();
+
+// ---------- Course d'hippocampes ----------
+// Entre deux parties de loto, le streamer ouvre les inscriptions (elles restent ouvertes jusqu'à son clic sur « Lancer »). Les viewers s'inscrivent en achetant (50 Écailles = points de
+// chaîne) la récompense « Inscris-moi à la course ». Le serveur lit les achats (lecture régulière de la file Twitch), valide
+// ou REMBOURSE (annule l'achat), puis lance une course de 60 s calculée de façon déterministe : le serveur ne transmet que la
+// graine et la liste des participants, chaque overlay rejoue exactement la même course. Le gagnant reçoit un carton « Bonus
+// course » pour la PARTIE SUIVANTE (même mécanisme que le bonus des mini-jeux, cumulable : un abonné peut avoir 4 cartons).
+const RACE_COST = Math.max(1, parseInt(process.env.RACE_REWARD_COST, 10) || 50);
+const RACE_REWARD_TITLE = "Course d'hippocampes : s'inscrire";
+const RACE_START_DELAY_MS = 6000;        // entre le clic « Lancer » et le départ (laisse arriver l'état chez tout le monde)
+const RACE_WINNER_ANNOUNCE_DELAY_MS = 14000; // après l'arrivée : annonce au chat (retard vidéo des viewers)
+const RACE_MIN_PLAYERS = 2;
+let race = { phase: "idle", id: null, openUntil: null, participants: [], seed: null, startTs: null, finishT: null, winner: null, winnerPseudo: null, endsAt: null, test: false };
+let raceRewardId = null;      // identifiant de la récompense créée par ce serveur (persisté)
+let pendingRaceBonus = null;  // { pseudo, ts } : gagnant de la dernière course, bonus pour la prochaine « Nouvelle partie »
+let raceBusy = false;
+let raceTimers = [];
+
+function racePublic() {
+  const r = race;
+  const o = { phase: r.phase, id: r.id, count: r.participants.length, openUntil: r.openUntil, test: !!r.test, cost: RACE_COST, rewardTitle: RACE_REWARD_TITLE };
+  if (r.phase !== "idle") o.participants = r.participants.map((p) => p.pseudo);
+  if (r.phase === "running" || r.phase === "done") { o.seed = r.seed; o.startTs = r.startTs; o.finishT = r.finishT; o.endsAt = r.endsAt; }
+  if (r.phase === "done") o.winner = r.winnerPseudo;
+  return o;
+}
+function hasRaceBonus(pseudo) {
+  return !!(state.raceBonus && state.raceBonus.pseudo && String(pseudo).toLowerCase() === state.raceBonus.pseudo.toLowerCase());
+}
+
+// Appel à l'API Twitch avec le jeton du streamer (portée channel:manage:redemptions, voir /auth/twitch/start).
+async function twitchStreamerApi(method, path, body) {
+  const token = await getBroadcasterAccessToken();
+  const bId = await getBroadcasterUserId();
+  if (!token || !bId) return { ok: false, status: 0, error: "autorisation du streamer manquante : ouvre /auth/twitch/start une fois" };
+  const sep = path.includes("?") ? "&" : "?";
+  try {
+    const r = await fetch("https://api.twitch.tv/helix" + path + sep + "broadcaster_id=" + encodeURIComponent(bId), {
+      method,
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    try { data = await r.json(); } catch (e) {}
+    let error = null;
+    if (!r.ok) error = r.status === 401 || r.status === 403 ? "autorisation insuffisante : ouvre /auth/twitch/start pour réautoriser (nouvelle portée requise)" : (data && data.message) || "erreur Twitch " + r.status;
+    return { ok: r.ok, status: r.status, data, error };
+  } catch (e) {
+    return { ok: false, status: 0, error: e.message };
+  }
+}
+
+// Crée (ou retrouve) la récompense « Inscris-moi à la course » ; elle reste désactivée tant que les inscriptions sont fermées.
+async function ensureRaceReward() {
+  if (raceRewardId) {
+    const r = await twitchStreamerApi("GET", "/channel_points/custom_rewards?only_manageable_rewards=true&id=" + encodeURIComponent(raceRewardId));
+    if (r.ok && r.data && r.data.data && r.data.data.length) return { ok: true };
+    if (r.status === 401 || r.status === 403 || r.status === 0) return { ok: false, error: r.error };
+    raceRewardId = null;
+  }
+  const list = await twitchStreamerApi("GET", "/channel_points/custom_rewards?only_manageable_rewards=true");
+  if (list.ok && list.data && list.data.data) {
+    const found = list.data.data.find((x) => x.title === RACE_REWARD_TITLE);
+    if (found) { raceRewardId = found.id; await redisSetJSON("raceRewardId", raceRewardId); return { ok: true }; }
+  } else if (!list.ok) return { ok: false, error: list.error };
+  const c = await twitchStreamerApi("POST", "/channel_points/custom_rewards", {
+    title: RACE_REWARD_TITLE,
+    cost: RACE_COST,
+    prompt: "Ton hippocampe prend le départ de la course ! (une seule inscription par course ; remboursé si les inscriptions sont fermées)",
+    is_enabled: false,
+    background_color: "#3A7C95",
+    is_max_per_user_per_stream_enabled: true,
+    max_per_user_per_stream: 1,
+    should_redemptions_skip_request_queue: false, // les achats restent « en attente » : on peut les annuler = remboursement
+  });
+  if (!c.ok || !c.data || !c.data.data || !c.data.data[0]) return { ok: false, error: c.error || "création de la récompense impossible" };
+  raceRewardId = c.data.data[0].id;
+  await redisSetJSON("raceRewardId", raceRewardId);
+  return { ok: true };
+}
+async function setRaceRewardEnabled(on) {
+  if (!raceRewardId) return { ok: true };
+  return twitchStreamerApi("PATCH", "/channel_points/custom_rewards?id=" + encodeURIComponent(raceRewardId), { is_enabled: !!on, cost: RACE_COST });
+}
+async function settleRedemption(id, status) {
+  if (!id) return { ok: true }; // faux participant d'essai : rien à régler côté Twitch
+  return twitchStreamerApi("PATCH", "/channel_points/custom_rewards/redemptions?id=" + encodeURIComponent(id) + "&reward_id=" + encodeURIComponent(raceRewardId), { status });
+}
+// Lit les achats en attente : inscrit (FULFILLED) ceux qui arrivent pendant les inscriptions, rembourse (CANCELED) les autres.
+async function pollRaceRedemptions() {
+  if (!raceRewardId) return;
+  const r = await twitchStreamerApi("GET", "/channel_points/custom_rewards/redemptions?reward_id=" + encodeURIComponent(raceRewardId) + "&status=UNFULFILLED&first=50");
+  if (!r.ok || !r.data || !Array.isArray(r.data.data)) return;
+  for (const red of r.data.data) {
+    if (race.participants.some((p) => p.rid === red.id)) continue; // déjà compté : reste « en attente » jusqu'au départ (ou à l'annulation = remboursement)
+    const userId = String(red.user_id || "");
+    const pseudo = cleanPseudo(red.user_name || red.user_login);
+    // Les inscriptions restent ouvertes jusqu'à ce que le streamer lance (ou annule) la course : pas de départ automatique.
+    const open = race.phase === "open";
+    const dup = race.participants.some((p) => p.userId === userId);
+    if (open && pseudo && userId && !dup) {
+      race.participants.push({ userId, pseudo, rid: red.id });
+      reconcilePseudoRename(userId, pseudo);
+    } else {
+      await settleRedemption(red.id, "CANCELED"); // course fermée / déjà inscrit : remboursé
+    }
+  }
+}
+function clearRaceTimers() { raceTimers.forEach((t) => clearTimeout(t)); raceTimers = []; }
+
+async function raceOpen() {
+  if (race.phase === "open" || race.phase === "running") return { ok: false, code: 409, error: "une course est déjà en cours" };
+  const rw = await ensureRaceReward();
+  if (!rw.ok) return { ok: false, code: 500, error: rw.error };
+  clearRaceTimers();
+  race = { phase: "open", id: Date.now() + "-" + Math.random().toString(36).slice(2, 7), openUntil: null, participants: [], seed: null, startTs: null, finishT: null, winner: null, winnerPseudo: null, endsAt: null, test: !!state.testMode };
+  await pollRaceRedemptions(); // d'éventuels achats restés en attente (ex. redémarrage du serveur) comptent comme inscriptions
+  const en = await setRaceRewardEnabled(true);
+  if (!en.ok) { race.phase = "idle"; return { ok: false, code: 500, error: en.error }; }
+  botSay("🏁 COURSE D'HIPPOCAMPES ! Inscriptions ouvertes : ouvre le menu des points de chaîne et prends « " + RACE_REWARD_TITLE + " » (" + RACE_COST + " Écailles) !");
+  return { ok: true };
+}
+async function raceStart() {
+  if (race.phase !== "open") return { ok: false, code: 409, error: "les inscriptions ne sont pas ouvertes" };
+  await pollRaceRedemptions();
+  if (race.participants.length < RACE_MIN_PLAYERS) return { ok: false, code: 400, error: "il faut au moins " + RACE_MIN_PLAYERS + " inscrits (" + race.participants.length + " pour l'instant)" };
+  race.phase = "running"; // plus aucune inscription ensuite
+  await setRaceRewardEnabled(false);
+  await pollRaceRedemptions(); // derniers achats : refusés et remboursés
+  for (const p of race.participants) await settleRedemption(p.rid, "FULFILLED"); // les inscrits sont définitivement débités
+  const n = race.participants.length;
+  race.seed = crypto.randomInt(1, 4294967295);
+  const sim = RaceEngine.simulate(n, race.seed);
+  race.winner = sim.winner; race.winnerPseudo = race.participants[sim.winner].pseudo; race.finishT = sim.finishT;
+  race.startTs = Date.now() + RACE_START_DELAY_MS;
+  race.endsAt = race.startTs + Math.round(sim.finishT * 1000);
+  botSay("🏁 " + n + " hippocampes sur la ligne de départ ! La course commence…");
+  raceTimers.push(setTimeout(raceFinish, race.endsAt + RACE_WINNER_ANNOUNCE_DELAY_MS - Date.now()));
+  return { ok: true, count: n };
+}
+function raceFinish() {
+  if (race.phase !== "running") return;
+  race.phase = "done";
+  const winnerIsFake = !!(race.participants[race.winner] && race.participants[race.winner].fake);
+  const award = !race.test && !state.testMode && !winnerIsFake;
+  if (award) { pendingRaceBonus = { pseudo: race.winnerPseudo, ts: Date.now() }; redisSetJSON("pendingRaceBonus", pendingRaceBonus); }
+  botSay("🏆 @" + race.winnerPseudo + " remporte la course d'hippocampes !" + (award ? " Carton « Bonus course » offert pour la prochaine partie de loto. Bravo !" : " (course d'essai)"));
+}
+async function raceCancel() {
+  if (race.phase === "running") return { ok: false, code: 409, error: "la course est lancée" };
+  const wasOpen = race.phase === "open";
+  const toRefund = race.participants.slice();
+  race.phase = "idle"; race.participants = []; clearRaceTimers();
+  if (wasOpen) { await setRaceRewardEnabled(false); for (const p of toRefund) await settleRedemption(p.rid, "CANCELED"); await pollRaceRedemptions(); botSay("La course est annulée, les inscriptions sont remboursées."); }
+  return { ok: true };
+}
+// Toutes les 3 s pendant les inscriptions : lit les achats en attente (le départ reste TOUJOURS lancé à la main par le streamer).
+setInterval(async () => {
+  if (race.phase !== "open" || raceBusy) return;
+  raceBusy = true;
+  try { await pollRaceRedemptions(); } catch (e) { console.error("Course : erreur de lecture des inscriptions :", e.message); }
+  raceBusy = false;
+}, 3000);
+
+if (process.env.CP_TEST === "1") global.__raceTest = { raceFinish, getRace: () => race, getState: () => state, getPending: () => pendingRaceBonus };
+app.get("/race", rateLimit("race", 600, 60000), (req, res) => res.json(racePublic()));
+app.post("/race/open", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const r = await raceOpen();
+  if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
+  res.json({ ok: true, race: racePublic() });
+});
+app.post("/race/start", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  if (raceBusy) return res.status(409).json({ error: "opération en cours, réessaie dans 3 s" });
+  raceBusy = true;
+  let r;
+  try { r = await raceStart(); } finally { raceBusy = false; }
+  if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
+  res.json({ ok: true, race: racePublic() });
+});
+// OUTIL D'ESSAI ÉPHÉMÈRE : ajoute de faux inscrits pendant les inscriptions.
+// Désactivé tant que la variable Render RACE_FAKE_KEY n'existe pas. Supprime la variable après l'essai.
+// Utilisation (navigateur) : https://carthon-plein-backend.onrender.com/race/fake?key=TON_SECRET&n=30
+app.get("/race/fake", (req, res) => {
+  const k = process.env.RACE_FAKE_KEY;
+  if (!k || String(req.query.key || "") !== k) return res.status(404).send("not found");
+  if (race.phase !== "open") return res.status(409).send("Ouvre d'abord les inscriptions à la course.");
+  const n = Math.max(1, Math.min(200, parseInt(req.query.n, 10) || 20));
+  const first = ["Pixel","Thon","Loto","Mamie","Tonton","Zazou","Bingo","Kiki","Nono","Mitty","Chloé","Léa","Tom","Jul","Nina","Ours","Sushi","Corsaire","Bulle","Neptune"];
+  let added = 0;
+  for (let i = 0; i < n && race.participants.length < 500; i++) {
+    const pseudo = first[Math.floor(Math.random() * first.length)] + "_" + Math.floor(Math.random() * 900 + 100);
+    if (race.participants.some((p) => p.pseudo === pseudo)) continue;
+    race.participants.push({ userId: "fake" + Date.now() + "_" + i, pseudo, rid: null, fake: true });
+    added++;
+  }
+  res.send(added + " faux participants ajoutés (total " + race.participants.length + "). Ils ne gagnent aucun carton bonus.");
+});
+app.post("/race/cancel", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const r = await raceCancel();
+  if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
+  res.json({ ok: true, race: racePublic() });
+});
+
 // ---------- Bot de chat : inscription via "!carthon" ----------
 const BOT_USERNAME = process.env.BOT_USERNAME;
 const BOT_OAUTH_TOKEN = process.env.BOT_OAUTH_TOKEN;
 const CHANNEL_NAME = process.env.CHANNEL_NAME;
 let chatBotConnected = false;
+let botClient = null;
+function botSay(text) { try { if (botClient && chatBotConnected) botClient.say("#" + CHANNEL_NAME, text); } catch (e) {} }
+let lastRaceHelpTs = 0;
 
 if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
   const client = new tmi.Client({
@@ -2336,6 +2689,7 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
     channels: [CHANNEL_NAME],
   });
 
+  botClient = client;
   client.connect().catch((err) => console.log("Erreur de connexion au chat :", err));
 
   client.on("connected", () => {
@@ -2365,6 +2719,15 @@ if (BOT_USERNAME && BOT_OAUTH_TOKEN && CHANNEL_NAME) {
       } else {
         client.say(channel, "@" + pseudo + " les inscriptions sont fermées pour cette partie, à la prochaine !");
       }
+      return;
+    }
+    if (text === "!course") {
+      // L'inscription à la course passe uniquement par la récompense en points de chaîne : le bot explique comment (1 message / 20 s au plus).
+      const now = Date.now();
+      if (now - lastRaceHelpTs < 20000) return;
+      lastRaceHelpTs = now;
+      if (race.phase === "open") client.say(channel, "🐴 Pour t'inscrire à la course, ouvre le menu des points de chaîne et prends « " + RACE_REWARD_TITLE + " » (" + RACE_COST + " Écailles) !");
+      else client.say(channel, "Pas d'inscription à la course en ce moment : reste attentif, le streamer l'annoncera !");
       return;
     }
     if (text === "!pan") {
@@ -2397,7 +2760,7 @@ function gameSnapshot() {
     drawn: state.drawn, players: state.players, tierWinners: state.tierWinners, winner: state.winner,
     pendingFinalists: state.pendingFinalists, pendingFinalistsDrawCount: state.pendingFinalistsDrawCount,
     started: state.started, gameId: state.gameId, registrationEndsAt: state.registrationEndsAt,
-    miniPoints: state.miniPoints, miniBonus: state.miniBonus, testMode: !!state.testMode,
+    miniPoints: state.miniPoints, miniBonus: state.miniBonus, raceBonus: state.raceBonus, testMode: !!state.testMode,
   };
 }
 function restoreGameSnapshot(v) {
@@ -2405,7 +2768,8 @@ function restoreGameSnapshot(v) {
   state = {
     ...state,
     drawn: v.drawn.filter((n) => Number.isInteger(n)),
-    players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub, hasBonus: !!p.hasBonus })),
+    players: v.players.filter((p) => p && typeof p.pseudo === "string").map((p) => ({ pseudo: p.pseudo, isSub: !!p.isSub, hasBonus: !!p.hasBonus, hasRace: !!p.hasRace })),
+    raceBonus: v.raceBonus && typeof v.raceBonus.pseudo === "string" ? { pseudo: v.raceBonus.pseudo } : null,
     miniPoints: v.miniPoints && typeof v.miniPoints === "object" ? v.miniPoints : {},
     miniBonus: v.miniBonus && typeof v.miniBonus.pseudo === "string" ? v.miniBonus : null,
     testMode: !!v.testMode,
@@ -2444,6 +2808,8 @@ const PERSISTED = {
   overlayVisible: [() => overlayVisible, (v) => { overlayVisible = v; }, true],
   overlayDelayMs: [() => overlayDelayMs, (v) => { overlayDelayMs = (typeof v === "number" && v >= 0 && v <= 20000) ? v : 0; }, 0],
   overlayVolume: [() => overlayVolume, (v) => { overlayVolume = (typeof v === "number" && v >= 0 && v <= 1) ? v : 1; }, 1],
+  raceRewardId: [() => raceRewardId, (v) => { raceRewardId = typeof v === "string" ? v : null; }, null],
+  pendingRaceBonus: [() => pendingRaceBonus, (v) => { pendingRaceBonus = v && typeof v.pseudo === "string" ? v : null; }, null],
   lastWinner: [() => lastWinner, (v) => { lastWinner = v; }, null],
   // Partie en cours (inscrits, numéros tirés, gagnants...) : sans ça, un redémarrage du serveur
   // (redéploiement, plantage) effaçait la partie et les joueurs perdaient leur carton.
