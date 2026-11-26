@@ -332,6 +332,13 @@ let winsByPseudo = {};
 const PIONEER_FROM = Date.parse("2026-10-31T23:00:00Z");  // 1er nov. 00h00 Paris
 const PIONEER_UNTIL = Date.parse("2026-11-01T23:00:00Z"); // 2 nov. 00h00 Paris
 let gamesByPseudo = {};
+// Titres mini-jeux / course : { pseudo: { miniFirsts, raceWins, raceGames } } — comptés seulement hors mode test, sans les faux participants.
+let extraStatsByPseudo = {};
+function bumpExtraStat(pseudo, key, n) {
+  if (!pseudo) return;
+  const e = extraStatsByPseudo[pseudo] || (extraStatsByPseudo[pseudo] = { miniFirsts: 0, raceWins: 0, raceGames: 0 });
+  e[key] = (e[key] || 0) + (n || 1);
+}
 let miniRecords = {}; // meilleur résultat de tous les temps par mini-jeu : { type: { pseudo, value, ts } }
 
 // Les 5 nouveaux titres (Vétéran, Fashion Victim, Fidèle, Pilier de la chaîne, Pionnier)
@@ -341,8 +348,8 @@ let miniRecords = {}; // meilleur résultat de tous les temps par mini-jeu : { t
 // Pionnier de la soirée de lancement) continuent de tourner en coulisses.
 // Pour les activer : variable d'environnement NEW_TITLES_VISIBLE = 1 sur Render
 // (une fois la nouvelle version de l'extension en ligne).
-const NEW_TITLES_VISIBLE = process.env.NEW_TITLES_VISIBLE === "1";
-const NEW_TITLE_KEYS = ["veteran", "fashion_victim", "fidele", "pilier", "pionnier"];
+const NEW_TITLES_VISIBLE = process.env.NEW_TITLES_VISIBLE !== "0"; // visibles par défaut ; mettre NEW_TITLES_VISIBLE=0 sur Render pour les masquer
+const NEW_TITLE_KEYS = ["veteran", "fashion_victim", "fidele", "pilier", "pionnier", "adroit", "maitre_mini", "recordman", "hippo_or", "seigneur_mers", "habitue_courses"];
 
 function recordGameParticipation() {
   if (!state.drawn || state.drawn.length === 0) return;
@@ -388,6 +395,12 @@ function reconcilePseudoRename(userId, newPseudo) {
       winsByPseudo[newPseudo] = { total: prevNew.total + prevOld.total, super: prevNew.super + prevOld.super };
       delete winsByPseudo[oldPseudo];
       redisSetJSON("winsByPseudo", winsByPseudo);
+    }
+    if (extraStatsByPseudo[oldPseudo]) {
+      const en = extraStatsByPseudo[newPseudo] || { miniFirsts: 0, raceWins: 0, raceGames: 0 }, eo = extraStatsByPseudo[oldPseudo];
+      extraStatsByPseudo[newPseudo] = { miniFirsts: en.miniFirsts + eo.miniFirsts, raceWins: en.raceWins + eo.raceWins, raceGames: en.raceGames + eo.raceGames };
+      delete extraStatsByPseudo[oldPseudo];
+      redisSetJSON("extraStatsByPseudo", extraStatsByPseudo);
     }
     if (gamesByPseudo[oldPseudo]) {
       const pn = gamesByPseudo[newPseudo] || { games: 0, pioneer: false };
@@ -465,6 +478,15 @@ function getAvailableStatuses(pseudo) {
   if (played.games >= 10) availableTitles.push("fidele");
   if (played.pioneer) availableTitles.push("pionnier");
   if (isBroadcaster || frames.length >= 2) availableTitles.push("collector");
+  // Titres mini-jeux et course (ajoutés en fin de liste : ils ne changent pas le titre affiché par défaut)
+  const ex = isBroadcaster ? { miniFirsts: 10, raceWins: 3, raceGames: 5 } : (extraStatsByPseudo[pseudo] || {});
+  const holdsRecord = isBroadcaster || Object.values(miniRecords || {}).some((r) => r && r.pseudo === pseudo);
+  if ((ex.miniFirsts || 0) >= 10) availableTitles.push("maitre_mini");
+  if ((ex.miniFirsts || 0) >= 3) availableTitles.push("adroit");
+  if (holdsRecord) availableTitles.push("recordman");
+  if ((ex.raceWins || 0) >= 3) availableTitles.push("seigneur_mers");
+  if ((ex.raceWins || 0) >= 1) availableTitles.push("hippo_or");
+  if ((ex.raceGames || 0) >= 5) availableTitles.push("habitue_courses");
 
   return {
     availableBadges,
@@ -517,6 +539,7 @@ function awardMiniPoints(entries) {
     cur.pts += MINI_POINTS[i];
     if (i === 0) cur.firsts++;
     cur.lastTs = Date.now();
+    if (i === 0 && !state.testMode && e.pseudo && e.pseudo !== "Un viewer") { bumpExtraStat(e.pseudo, "miniFirsts"); redisSetJSON("extraStatsByPseudo", extraStatsByPseudo); }
   });
 }
 function miniRanking() {
@@ -703,7 +726,7 @@ app.get("/privacy", (req, res) => {
     <li>Votre pseudo Twitch, obtenu via l'autorisation d'identité Twitch (vous n'êtes jamais obligé de la donner : sans elle, vous pouvez regarder la partie mais pas jouer). Il sert à générer votre carton, à l'afficher dans le classement et à annoncer les gagnants.</li>
     <li>Votre statut d'abonné à la chaîne (le cas échéant), pour vous attribuer un carton bonus.</li>
     <li>Vos résultats aux mini-jeux : les points de la partie en cours et les records (meilleur résultat de chaque mini-jeu, avec le pseudo de son auteur). Pendant le mini-jeu « boss thon », les mots écrits dans le chat Twitch sont lus par le robot de la chaîne ; seuls les mots du jeu sont utilisés et aucun message du chat n'est conservé.</li>
-    <li>Votre progression dans le jeu, conservée d'une partie à l'autre : les cadres de carton débloqués, le nombre de victoires, le nombre de parties jouées, le fait d'avoir joué la soirée de lancement, ainsi que le cadre et le titre que vous avez choisi d'afficher. Ces informations servent uniquement à vous attribuer vos cadres et vos titres.</li>
+    <li>Votre progression dans le jeu, conservée d'une partie à l'autre : les cadres de carton débloqués, le nombre de victoires, le nombre de parties jouées, le fait d'avoir joué la soirée de lancement, le nombre de premières places aux mini-jeux, de courses disputées et de courses gagnées, ainsi que le cadre et le titre que vous avez choisi d'afficher. Ces informations servent uniquement à vous attribuer vos cadres et vos titres.</li>
   </ul>
   <h2>Où sont stockées les données</h2>
   <p>Les données sont hébergées sur des serveurs situés aux États-Unis (hébergeur Render pour le serveur du jeu, base de données Upstash Redis pour le stockage). Des copies de sauvegarde quotidiennes sont faites pour éviter de perdre les cadres et les victoires des joueurs.</p>
@@ -979,24 +1002,37 @@ app.get("/reglement", (req, res) => {
   <p>Le jeu "Carthon Plein" est organisé par la chaîne Twitch Carthon Plein, sur la plateforme Twitch, dans le cadre de ses diffusions en direct. Contact : carthonplein@gmail.com</p>
 
   <h2>Article 2 — Participation</h2>
-  <p>La participation est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement.</p>
+  <p>La participation au jeu de loto est entièrement gratuite et sans obligation d'achat. Aucun paiement, abonnement ou don n'est requis pour participer ni pour avoir une chance de gagner le lot principal. Le jeu est ouvert à toute personne disposant d'un compte Twitch, sous réserve du respect du présent règlement. La seule participation qui demande des points de chaîne est la course d'hippocampes (article 3 ter) : ces points sont gratuits (gagnés en regardant la chaîne), n'ont aucune valeur monétaire, et la course n'a aucun effet sur le tirage du loto.</p>
 
   <h2>Article 3 — Modalités du jeu</h2>
-  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les mini-jeux gratuits (jeux d'adresse déclenchés par certains numéros, sans aucun effet sur le tirage des numéros) rapportent des points à leurs trois premiers ; à la fin de la partie, le joueur ayant le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
+  <p>Pour participer, le viewer clique sur le bouton "S'inscrire" de l'extension, affichée par-dessus le stream, pendant qu'une partie est ouverte aux inscriptions (ce qui nécessite d'autoriser l'extension à connaître son pseudo Twitch). Un carton personnel est alors généré. Les mini-jeux gratuits (jeux d'adresse déclenchés par certains numéros, sans aucun effet sur le tirage des numéros) rapportent des points à leurs trois premiers ; à la fin de la partie, le joueur ayant le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante. Les inscriptions peuvent être limitées dans le temps par un minuteur affiché à l'écran, et se ferment dans tous les cas dès le premier numéro tiré. Le streamer tire ensuite des numéros parmi 1 et 75. Les joueurs abonnés à la chaîne reçoivent en plus un carton bonus, sans surcoût ni condition supplémentaire. Un joueur peut ainsi disposer, au maximum, de 4 cartons : son carton principal, le bonus abonné, le bonus mini-jeux et le bonus course (articles 3 bis et 3 ter). Un carton bonus n'est jamais cumulable d'une partie à l'autre. La partie se termine lorsqu'un joueur complète l'intégralité de son carton ("Carthon Plein").</p>
 
   <h2>Article 3 bis — Les mini-jeux</h2>
   <p>Certains numéros tirés déclenchent automatiquement un mini-jeu gratuit (jeu d'adresse ou de réflexes : course de poissons, pluie de bouteilles, pêche au thon, piñata en rythme, canard, puzzle, mémoire de thons, poisson à faire voler, boss thon géant). Participer à un mini-jeu est facultatif, ne nécessite aucun achat, et n'a <strong>aucun effet sur le tirage des numéros ni sur la partie en cours</strong> ; seule la récompense décrite ci-dessous concerne la partie suivante. Aucun mini-jeu n'est lancé sur le tirage qui termine la partie (Carthon Plein final).</p>
   <ul>
     <li><strong>Points :</strong> à la fin de chaque mini-jeu, les trois premiers du classement marquent 3, 2 et 1 point. Dans les mini-jeux collectifs (piñata, boss thon), ces points ne sont attribués que si l'objectif commun est atteint par l'ensemble des joueurs. Les points s'additionnent pendant toute la partie de loto et sont remis à zéro à chaque nouvelle partie.</li>
-    <li><strong>Récompense :</strong> à la fin de la partie, le joueur qui a le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante (non cumulable d'une partie à l'autre). En cas d'égalité de points, il est départagé par le nombre de premières places, puis par celui qui a atteint son total le plus tôt. Les joueurs abonnés conservent en plus leur carton bonus d'abonné. Ce carton récompense l'adresse du joueur ; il lui donne un carton supplémentaire pour la partie suivante, sans garantie de gain.</li>
+    <li><strong>Récompense :</strong> à la fin de la partie, le joueur qui a le plus de points reçoit un carton bonus, valable uniquement pour la partie suivante (non cumulable d'une partie à l'autre). En cas d'égalité de points, il est départagé par le nombre de premières places, puis par celui qui a atteint son total le plus tôt. Les joueurs abonnés conservent en plus leur carton bonus d'abonné, et le gagnant d'une course (article 3 ter) peut y ajouter son bonus course, dans la limite de 4 cartons. Ce carton récompense l'adresse du joueur ; il lui donne un carton supplémentaire pour la partie suivante, sans garantie de gain.</li>
     <li><strong>Boss thon :</strong> pendant ce mini-jeu, les mots écrits dans le chat Twitch sont lus par le robot de la chaîne. Seuls les mots du jeu sont pris en compte ; les autres messages ne sont ni utilisés ni conservés.</li>
     <li><strong>Records :</strong> le meilleur résultat de chaque mini-jeu (et de chaque photo pour le puzzle) est conservé avec le pseudo de son auteur et affiché à la fin du mini-jeu, tant qu'il n'est pas battu.</li>
     <li><strong>Loyauté :</strong> les résultats sont contrôlés par le serveur. L'usage de scripts, d'automatismes ou de toute méthode de triche est interdit : l'organisateur peut annuler un résultat, retirer un record ou exclure un joueur concerné.</li>
   </ul>
 
   <h2>Article 3 ter — La course d'hippocampes</h2>
-  <p>De temps à autre, le streamer peut organiser une course d'hippocampes, ouverte uniquement pendant une période d'inscription qu'il déclenche lui-même. L'inscription se fait en échangeant la récompense de points de chaîne « Course d'hippocampes » (par défaut 50 points de chaîne, points gratuits et gagnés en regardant la chaîne ; ils n'ont aucune valeur monétaire). Le nombre de participants n'est pas limité. Le résultat est <strong>entièrement tiré au hasard</strong> par le serveur : aucune habileté ni aucun achat ne l'influence, et la course est identique pour tous les spectateurs. Si la course est annulée avant son départ, les points de chaîne sont remboursés.</p>
-  <p><strong>Récompense :</strong> le gagnant reçoit un carton « Bonus course » pour la prochaine partie de loto (non cumulable d'une partie à l'autre, aucun gain de points de chaîne). Ce carton s'ajoute aux autres cartons bonus éventuels (abonné, mini-jeux) : un joueur peut ainsi disposer de 4 cartons au maximum.</p>
+  <p>De temps à autre, le streamer peut organiser une course d'hippocampes, indépendante du tirage du loto. Seul le streamer ouvre les inscriptions, lance le départ ou annule la course : il n'y a aucun départ automatique.</p>
+  <ul>
+    <li><strong>Inscription :</strong> uniquement pendant la période d'inscription, en échangeant la récompense de points de chaîne « Course d'hippocampes » (par défaut 50 Écailles, le nom des points de chaîne de la chaîne). Ces points sont gratuits et sans valeur monétaire. Une seule inscription par personne et par course : tout doublon ou toute demande hors période d'inscription est annulé et remboursé automatiquement. Le nombre de participants n'est pas limité.</li>
+    <li><strong>Remboursement :</strong> si la course est annulée avant le départ, tous les points de chaîne sont remboursés. Une fois la course lancée, les inscriptions sont définitives.</li>
+    <li><strong>Déroulement :</strong> la course dure environ une minute. Le résultat est <strong>entièrement tiré au hasard</strong> par le serveur : aucune habileté, aucun achat ni aucun don ne l'influence, et la course est identique pour tous les spectateurs, au rythme de leur diffusion. Les événements affichés pendant la course (courant marin, chute, objet lancé, méduse ou crabe) font partie du tirage au sort. Les trois premiers arrivés sont affichés sur un podium, et le gagnant est annoncé dans le chat par le robot de la chaîne. Les spectateurs sur téléphone peuvent s'inscrire et gagner, mais ne voient pas l'animation.</li>
+    <li><strong>Récompense :</strong> le gagnant reçoit un carton « Bonus course » pour la prochaine partie de loto, sans aucun gain de points de chaîne. Si plusieurs courses ont lieu avant la partie suivante, seul le gagnant de la dernière reçoit ce carton. Une course d'essai, organisée en mode test, ne donne aucun carton.</li>
+    <li><strong>Paris :</strong> le streamer peut proposer en parallèle une Prédiction Twitch. Elle est gérée par Twitch, uniquement avec des points de chaîne sans valeur monétaire, et ne donne aucun lot.</li>
+  </ul>
+
+  <h2>Article 3 quater — Parties d'essai, cadres et titres</h2>
+  <ul>
+    <li><strong>Parties d'essai :</strong> le streamer peut, avant le premier numéro tiré, lancer une partie en « mode test », signalée à l'écran. Elle ne compte pour rien : ni victoires, ni parties jouées, ni records, ni titres, ni cartons bonus pour la partie suivante.</li>
+    <li><strong>Cadres :</strong> les cadres de carton sont purement décoratifs. Certains se gagnent en jouant, d'autres peuvent être obtenus grâce à un don libre à la chaîne ; ils n'ont aucun effet sur le tirage ni sur les chances de gagner.</li>
+    <li><strong>Titres :</strong> des titres honorifiques, sans valeur et sans avantage de jeu, peuvent être choisis et affichés à côté du pseudo. Ils se débloquent selon la progression : victoires au loto, nombre de parties jouées, cadres possédés, soirée de lancement, premières places aux mini-jeux (Adroit : 3 ; Maître des mini-jeux : 10), détention d'un record de mini-jeu (Recordman), victoires à la course (Hippocampe d'or : 1 ; Seigneur des mers : 3) et courses disputées (Habitué des courses : 5). Les compteurs des titres de mini-jeux et de course démarrent à la date de leur mise en service et ne tiennent pas compte des parties d'essai.</li>
+  </ul>
 
     <h2>Article 4 — Détermination du/des gagnant(s)</h2>
   <p>Le gagnant est le premier joueur dont le carton (principal ou bonus) est entièrement complété. En cas de complétion simultanée par plusieurs joueurs différents, un tirage au sort transparent (roue visible en direct par tous les viewers) désigne le gagnant final. Si un même joueur complète simultanément son carton principal et son carton bonus, sans qu'aucun autre joueur ne soit également ex-æquo, il est déclaré gagnant directement, sans tirage au sort.</p>
@@ -1013,7 +1049,8 @@ app.get("/reglement", (req, res) => {
     <li>le pseudo Twitch du joueur, obtenu via l'autorisation d'identité Twitch donnée lors de l'inscription (sans cette autorisation, il est possible de regarder la partie mais pas d'y participer) : il sert à générer le carton, à l'afficher dans le classement et à annoncer les gagnants ;</li>
     <li>le statut d'abonné à la chaîne, pour attribuer le carton bonus ;</li>
     <li>les résultats aux mini-jeux : points de la partie en cours, et records (meilleur résultat de chaque mini-jeu avec le pseudo de son auteur). Pour le boss thon, les mots du chat sont lus pendant le jeu mais les messages ne sont pas conservés ;</li>
-    <li>la progression du joueur d'une partie à l'autre : cadres de carton débloqués, nombre de victoires, nombre de parties jouées, participation à la soirée de lancement, cadre et titre choisis pour l'affichage. Ces informations servent uniquement à attribuer les cadres et les titres ;</li>
+    <li>la progression du joueur d'une partie à l'autre : cadres de carton débloqués, nombre de victoires, nombre de parties jouées, participation à la soirée de lancement, cadre et titre choisis pour l'affichage, nombre de premières places aux mini-jeux, de courses disputées et de courses gagnées. Ces informations servent uniquement à attribuer les cadres et les titres ;</li>
+    <li>pour la course d'hippocampes, le pseudo du joueur inscrit (obtenu via l'achat de la récompense de points de chaîne) pendant la durée de la course et de l'annonce du gagnant ;</li>
     <li>en cas de gain d'un lot physique, une adresse postale, demandée uniquement au gagnant et utilisée exclusivement pour l'envoi du lot. Elle n'est conservée que le temps nécessaire à l'expédition, puis supprimée.</li>
   </ul>
   <p>Ces données sont hébergées sur des serveurs situés aux États-Unis (Render pour le serveur du jeu, Upstash Redis pour le stockage), avec des sauvegardes quotidiennes pour éviter de perdre les cadres et les victoires des joueurs. Aucune donnée n'est vendue ni partagée avec des tiers en dehors de ces hébergeurs techniques ; l'extension n'utilise ni cookie de suivi ni publicité.</p>
@@ -1295,7 +1332,7 @@ async function resolveTypedPseudo(typed) {
   const low = t.toLowerCase();
   const known = new Set([
     ...Object.keys(unlockedFramesByPseudo), ...Object.keys(displayChoiceByPseudo),
-    ...Object.keys(winsByPseudo), ...Object.keys(gamesByPseudo),
+    ...Object.keys(winsByPseudo), ...Object.keys(gamesByPseudo), ...Object.keys(extraStatsByPseudo),
     ...Object.values(pseudoByUserId), ...state.players.map((p) => p.pseudo),
   ]);
   for (const k of known) if (typeof k === "string" && k.toLowerCase() === low) return { pseudo: k };
@@ -2606,6 +2643,7 @@ async function raceStart() {
   await setRaceRewardEnabled(false);
   await pollRaceRedemptions(); // derniers achats : refusés et remboursés
   for (const p of race.participants) await settleRedemption(p.rid, "FULFILLED"); // les inscrits sont définitivement débités
+  if (!race.test && !state.testMode) { race.participants.forEach((p) => { if (!p.fake) bumpExtraStat(p.pseudo, "raceGames"); }); redisSetJSON("extraStatsByPseudo", extraStatsByPseudo); }
   const n = race.participants.length;
   race.seed = crypto.randomInt(1, 4294967295);
   const sim = RaceEngine.simulate(n, race.seed);
@@ -2621,6 +2659,7 @@ function raceFinish() {
   race.phase = "done";
   const winnerIsFake = !!(race.participants[race.winner] && race.participants[race.winner].fake);
   const award = !race.test && !state.testMode && !winnerIsFake;
+  if (award) { bumpExtraStat(race.winnerPseudo, "raceWins"); redisSetJSON("extraStatsByPseudo", extraStatsByPseudo); }
   if (award) { pendingRaceBonus = { pseudo: race.winnerPseudo, ts: Date.now() }; redisSetJSON("pendingRaceBonus", pendingRaceBonus); }
   botSay("🏆 @" + race.winnerPseudo + " remporte la course d'hippocampes !" + (award ? " Carton « Bonus course » offert pour la prochaine partie de loto. Bravo !" : " (course d'essai)"));
 }
@@ -2640,7 +2679,7 @@ setInterval(async () => {
   raceBusy = false;
 }, 3000);
 
-if (process.env.CP_TEST === "1") global.__raceTest = { raceFinish, getRace: () => race, getState: () => state, getPending: () => pendingRaceBonus };
+if (process.env.CP_TEST === "1") global.__raceTest = { getExtra: () => extraStatsByPseudo, titles: (p) => getAvailableStatuses(p).availableTitles, raceFinish, getRace: () => race, getState: () => state, getPending: () => pendingRaceBonus };
 app.get("/race", rateLimit("race", 600, 60000), (req, res) => res.json(racePublic()));
 app.post("/race/open", async (req, res) => {
   if (!checkAdmin(req, res)) return;
@@ -2810,6 +2849,7 @@ const PERSISTED = {
   displayChoiceByPseudo: [() => displayChoiceByPseudo, (v) => { displayChoiceByPseudo = v; }, {}],
   winsByPseudo: [() => winsByPseudo, (v) => { winsByPseudo = v; }, {}],
   gamesByPseudo: [() => gamesByPseudo, (v) => { gamesByPseudo = v; }, {}],
+  extraStatsByPseudo: [() => extraStatsByPseudo, (v) => { extraStatsByPseudo = v && typeof v === "object" ? v : {}; }, {}],
   miniRecordsEpoch: [() => miniRecordsEpoch, (v) => { miniRecordsEpoch = typeof v === "string" ? v : null; }, null],
   miniRecords: [() => miniRecords, (v) => { miniRecords = v && typeof v === "object" ? v : {}; }, {}],
   pseudoByUserId: [() => pseudoByUserId, (v) => { pseudoByUserId = v; }, {}],
