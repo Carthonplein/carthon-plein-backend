@@ -1030,7 +1030,7 @@ app.get("/reglement", (req, res) => {
   <h2>Article 3 quater — Parties d'essai, cadres et titres</h2>
   <ul>
     <li><strong>Parties d'essai :</strong> le streamer peut, avant le premier numéro tiré, lancer une partie en « mode test », signalée à l'écran. Elle ne compte pour rien : ni victoires, ni parties jouées, ni records, ni titres, ni cartons bonus pour la partie suivante.</li>
-    <li><strong>Cadres :</strong> les cadres de carton sont purement décoratifs. Certains se gagnent en jouant, d'autres peuvent être obtenus grâce à un don libre à la chaîne ; ils n'ont aucun effet sur le tirage ni sur les chances de gagner.</li>
+    <li><strong>Cadres :</strong> les cadres de carton sont purement décoratifs. Certains se gagnent en jouant, d'autres peuvent être obtenus contre un don de 5 € par cadre à la chaîne (facultatif : aucun cadre n'est nécessaire pour jouer) ; ils n'ont aucun effet sur le tirage ni sur les chances de gagner.</li>
     <li><strong>Titres :</strong> des titres honorifiques, sans valeur et sans avantage de jeu, peuvent être choisis et affichés à côté du pseudo. Ils se débloquent selon la progression : victoires au loto, nombre de parties jouées, cadres possédés, soirée de lancement, premières places aux mini-jeux (Adroit : 3 ; Maître des mini-jeux : 10), détention d'un record de mini-jeu (Recordman), victoires à la course (Hippocampe d'or : 1 ; Seigneur des mers : 3) et courses disputées (Habitué des courses : 5). Les compteurs des titres de mini-jeux et de course démarrent à la date de leur mise en service et ne tiennent pas compte des parties d'essai.</li>
   </ul>
 
