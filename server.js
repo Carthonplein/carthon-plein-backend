@@ -2357,7 +2357,7 @@ const RaceEngine = (function () { const module = { exports: {} }; const self = u
 // identique sur tous les navigateurs.
 (function (root) {
   var DT = 0.1;          // pas de simulation (secondes)
-  var MAX_T = 64;        // durée maximale
+  var MAX_T = 72;        // durée maximale
   var TARGET_T = 58;     // durée visée d'un hippocampe moyen pour parcourir la piste
 
   function rng(seed) {
@@ -2382,11 +2382,16 @@ const RaceEngine = (function () { const module = { exports: {} }; const self = u
     var stall = new Float32Array(n);   // temps restant à l'arrêt/ralenti (s)
     var slow = new Float32Array(n);    // facteur de ralentissement pendant un "jet"
     var burst = new Float32Array(n);   // temps restant de coup de boost (s)
-    var base = 1 / TARGET_T;
+    // durée visée selon le nombre d'inscrits (plus il y en a, plus le peloton est groupé et l'arrivée rapide) : le podium complet arrive vers 60 s
+    var KT = [[5, 54], [10, 57], [50, 61], [200, 66], [100000, 66]], tgt = KT[0][1];
+    for (i = 1; i < KT.length; i++) if (n <= KT[i][0]) { tgt = KT[i - 1][1] + (KT[i][1] - KT[i - 1][1]) * (Math.max(n, KT[i - 1][0]) - KT[i - 1][0]) / (KT[i][0] - KT[i - 1][0]); break; }
+    var base = 1 / tgt;
     var steps = [new Float32Array(pos)];
     var events = [];
     var nextEvent = 1.5;
     var winner = -1, finishT = null;
+    var finT = new Float32Array(n), fin = [];   // instant d'arrivée de chacun (0 = pas encore arrivé) et ordre d'arrivée
+    var NEED = Math.min(n, 3);                   // la course dure jusqu'à l'arrivée du 3e (podium complet)
     var i, k, t = 0;
     var order = new Array(n);
     for (i = 0; i < n; i++) order[i] = i;
@@ -2433,24 +2438,25 @@ const RaceEngine = (function () { const module = { exports: {} }; const self = u
         if (burst[i] > 0) { v *= 2.6; burst[i] -= DT; }
         if (slow[i] > 0) { v *= 0.35; slow[i] -= DT; }
         if (stall[i] > 0) { v *= 0.08; stall[i] -= DT; }
+        if (finT[i] > 0) continue; // déjà arrivé : il reste sur la ligne
+        var p0 = pos[i];
         pos[i] += v * DT;
-        if (winner < 0 && pos[i] >= 1) { winner = i; finishT = t; }
-      }
-      // plusieurs arrivées au même pas : le plus avancé gagne
-      if (winner >= 0) {
-        var bestI = winner;
-        for (i = 0; i < n; i++) if (pos[i] > pos[bestI]) bestI = i;
-        winner = bestI;
+        if (pos[i] >= 1) { finT[i] = (k - 1) * DT + ((1 - p0) / (pos[i] - p0)) * DT; pos[i] = 1; fin.push(i); }
       }
       steps.push(new Float32Array(pos));
-      if (winner >= 0) break;
+      if (fin.length >= NEED) break;
     }
-    if (winner < 0) { // sécurité : personne n'a franchi la ligne => le plus avancé gagne
-      winner = 0;
-      for (i = 1; i < n; i++) if (pos[i] > pos[winner]) winner = i;
-      finishT = t;
+    fin.sort(function (x, y) { return finT[x] - finT[y] || x - y; });
+    var podium = fin.slice(0, NEED);
+    if (fin.length >= NEED) { winner = fin[0]; finishT = finT[fin[NEED - 1]]; }
+    else { // sécurité : pas assez d'arrivées dans le temps imparti => on complète avec les plus avancés
+      var rest = [];
+      for (i = 0; i < n; i++) if (!(finT[i] > 0)) rest.push(i);
+      rest.sort(function (x, y) { return pos[y] - pos[x] || x - y; });
+      podium = fin.concat(rest).slice(0, NEED);
+      winner = podium[0]; finishT = t;
     }
-    return { steps: steps, events: events, winner: winner, finishT: finishT, dt: DT, n: n };
+    return { steps: steps, events: events, winner: winner, finishT: finishT, podium: podium, finT: finT, dt: DT, n: n };
   }
 
   // Positions interpolées à l'instant t (secondes depuis le départ), bornées à 1.
@@ -2465,7 +2471,7 @@ const RaceEngine = (function () { const module = { exports: {} }; const self = u
 
   var api = { simulate: simulate, positionsAt: positionsAt, rng: rng, DT: DT };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.RaceEngine = api;
-})(undefined);
+})(typeof self !== "undefined" ? self : this);
 
 return module.exports; })();
 
