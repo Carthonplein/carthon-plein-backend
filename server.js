@@ -2539,8 +2539,7 @@ async function ensureRaceReward() {
     prompt: "Ton hippocampe prend le départ de la course ! (une seule inscription par course ; remboursé si les inscriptions sont fermées)",
     is_enabled: false,
     background_color: "#3A7C95",
-    is_max_per_user_per_stream_enabled: true,
-    max_per_user_per_stream: 1,
+    is_max_per_user_per_stream_enabled: false, // pas de limite Twitch : le serveur refuse (et rembourse) les doublons dans une même course
     should_redemptions_skip_request_queue: false, // les achats restent « en attente » : on peut les annuler = remboursement
   });
   if (!c.ok || !c.data || !c.data.data || !c.data.data[0]) return { ok: false, error: c.error || "création de la récompense impossible" };
@@ -2550,7 +2549,7 @@ async function ensureRaceReward() {
 }
 async function setRaceRewardEnabled(on) {
   if (!raceRewardId) return { ok: true };
-  return twitchStreamerApi("PATCH", "/channel_points/custom_rewards?id=" + encodeURIComponent(raceRewardId), { is_enabled: !!on, cost: RACE_COST });
+  return twitchStreamerApi("PATCH", "/channel_points/custom_rewards?id=" + encodeURIComponent(raceRewardId), { is_enabled: !!on, cost: RACE_COST, is_max_per_user_per_stream_enabled: false });
 }
 async function settleRedemption(id, status) {
   if (!id) return { ok: true }; // faux participant d'essai : rien à régler côté Twitch
