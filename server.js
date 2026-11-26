@@ -1184,7 +1184,10 @@ app.post("/set-volume", rateLimit("setvolume", 60, 60000), (req, res) => {
 app.post("/test-mode", (req, res) => {
   if (!checkAdmin(req, res)) return;
   const { on } = req.body || {};
-  state.testMode = typeof on === "boolean" ? on : !state.testMode;
+  const want = typeof on === "boolean" ? on : !state.testMode;
+  // Le mode test ne s'active qu'avant le premier numéro tiré (sinon une vraie partie en cours deviendrait jetable).
+  if (want && !state.testMode && state.drawn.length > 0) return res.status(409).json({ error: "mode test impossible : la partie a déjà commencé" });
+  state.testMode = want;
   console.log("AUDIT mode test " + (state.testMode ? "activé" : "coupé"));
   res.json({ ok: true, testMode: state.testMode });
 });
